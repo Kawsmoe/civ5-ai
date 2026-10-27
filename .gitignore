@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# per-game runtime files
+logs/
+plan.txt
