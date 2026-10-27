@@ -52,3 +52,18 @@ class ProductionGuardTest(unittest.TestCase):
         a = self.agent
         self.assertFalse(a.enough_workers(self.snapshot(20, 1)))
         self.assertTrue(a.enough_workers(self.snapshot(20, 2)))
+
+
+class TextToolCallTest(unittest.TestCase):
+    def test_extracts_calls_written_as_text(self):
+        from civ5ai.agent import extract_text_tool_calls
+        text = ('I will research pottery.\n<tool_call>\n{"name": "set_research", "arguments": {"tech": "TECH_POTTERY"}}\n'
+                '</tool_call>\n```json\n{"name": "end_turn", "arguments": "{}"}\n```')
+        calls = extract_text_tool_calls(text)
+        self.assertEqual([c["function"]["name"] for c in calls], ["set_research", "end_turn"])
+        self.assertEqual(calls[0]["function"]["arguments"], {"tech": "TECH_POTTERY"})
+
+    def test_ignores_plain_text_and_unknown_names(self):
+        from civ5ai.agent import extract_text_tool_calls
+        self.assertEqual(extract_text_tool_calls("1. **Continue Research**: keep going {not json}"), [])
+        self.assertEqual(extract_text_tool_calls('{"name": "launch_nukes", "arguments": {}}'), [])

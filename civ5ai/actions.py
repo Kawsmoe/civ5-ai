@@ -201,15 +201,24 @@ class Actions:
         turn, active = self._turn_status()
         return turn > self.turn_before_end or not active
 
-    def wait_for_my_turn(self, timeout=600):
-        """After end_turn: block until the AIs finish and our next turn starts."""
+    def wait_for_my_turn(self, timeout=600, on_wait=None, every=3):
+        """After end_turn: block until the AIs finish and our next turn starts.
+
+        on_wait() is called every few seconds meanwhile: the AIs' turns can stop
+        on a screen that needs us (a leader greeting us, a popup), and our turn
+        won't start until it is dealt with.
+        """
         start = getattr(self, "turn_before_end", None)
         if start is None:
             start = self._turn()
         deadline = time.time() + timeout
+        last_check = 0.0
         while time.time() < deadline:
             turn, active = self._turn_status()
             if turn > start and active:
                 return turn
+            if on_wait and time.time() - last_check >= every:
+                on_wait()
+                last_check = time.time()
             time.sleep(1)
         raise TimeoutError("our turn did not come back")

@@ -25,8 +25,10 @@ from .tuner import TunerError
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL = "qwen2.5:14b"
-MODEL_OPTIONS = {"temperature": 0.3, "num_ctx": 12288}
+# system prompt + tool definitions alone are ~5.5k tokens; leave room for state and replies
+MODEL_OPTIONS = {"temperature": 0.3, "num_ctx": 16384}
 MAX_ACTIONS_PER_TURN = 15
+MAX_SILENT_REPLIES = 2  # text-only replies in a row before falling back to defaults
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 PLAN_FILE = PROJECT_DIR / "plan.txt"  # the model's strategy, kept across runs
@@ -42,9 +44,35 @@ HANDLED_BLOCKERS = {
 }
 
 
-def chat(model, messages):
+def extract_text_tool_calls(content):
+    """Tool calls the model wrote as text instead of real calls.
+
+    qwen sometimes puts {"name": ..., "arguments": {...}} JSON (often inside
+    <tool_call> tags or ``` fences) in its message. Run those rather than ignore them.
+    """
+    known = {t["function"]["name"] for t in TOOLS}
+    calls, decoder, i = [], json.JSONDecoder(), 0
+    while (i := content.find("{", i)) != -1:
+        try:
+            obj, end = decoder.raw_decode(content, i)
+        except ValueError:
+            i += 1
+            continue
+        i = end
+        if isinstance(obj, dict) and obj.get("name") in known:
+            args = obj.get("arguments", obj.get("parameters", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            calls.append({"function": {"name": obj["name"], "arguments": args if isinstance(args, dict) else {}}})
+    return calls
+
+
+def chat(model, messages, tools=TOOLS):
     """One Ollama chat call with our tools; returns the reply message."""
-    body = json.dumps({"model": model, "messages": messages, "tools": TOOLS,
+    body = json.dumps({"model": model, "messages": messages, "tools": tools,
                        "stream": False, "options": MODEL_OPTIONS}).encode()
     req = urllib.request.Request(OLLAMA_URL, body, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
@@ -188,6 +216,46 @@ class Agent:
         d = diplomacy.get_diplomacy(self.t)
         return summarize(s) + ("\n" + diplomacy.summarize(d) if d else "")
 
+    def handle_screens_while_waiting(self):
+        """During the AIs' turns: answer leaders who talk to us and clear popups."""
+        d = diplomacy.get_diplomacy(self.t)
+        if d:
+            print("\n  (leader screen while the AIs move)" + diplomacy.summarize(d))
+            r = self.answer_leader(d)
+            print(f"  respond_to_leader -> {r}")
+            return
+        # a leader screen we can't read (e.g. a plain greeting): leave it the way "Return" does
+        closed = close_popups(self.t, keep_choices=False)
+        if closed:
+            print(f"  closed while waiting: {', '.join(closed)}")
+
+    def answer_leader(self, d):
+        """Let the model answer a leader screen in a short separate chat; decline if it doesn't."""
+        rivals = [line for line in summarize(get_state(self.t)).splitlines()
+                  if line.startswith(("  player", "    Attitude", "    Why"))]
+        prompt = (diplomacy.summarize(d)
+                  + "\n\nWhat you know about the civs you've met:\n" + "\n".join(rivals)
+                  + "\n\nYour plan: " + (self.plan or "none")
+                  + "\n\nAnswer with respond_to_leader.")
+        tool = [t for t in TOOLS if t["function"]["name"] == "respond_to_leader"]
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        try:
+            reply = chat(self.model, messages, tools=tool)
+            calls = reply.get("tool_calls") or extract_text_tool_calls(reply.get("content") or "")
+            for call in calls:
+                if call["function"]["name"] == "respond_to_leader":
+                    option = (call["function"].get("arguments") or {}).get("option")
+                    r = diplomacy.respond(self.t, option)
+                    self.record(tool="respond_to_leader", args={"option": option}, result=r, while_waiting=True)
+                    if r.startswith("ok"):
+                        return r
+        except (TunerError, OSError, ValueError, KeyError) as e:
+            self.record(error=f"answering leader: {e!r}")
+        # default: the last option is the decline / "never mind" / return one
+        r = diplomacy.respond(self.t, max(d["options"]))
+        self.record(tool="respond_to_leader", args={"option": max(d["options"])}, result=r, auto=True)
+        return r
+
     def wait_for_human(self, blocker):
         print(f"  !! game needs {blocker}, which the agent can't handle yet - "
               "please do it in the game window; waiting...")
@@ -302,19 +370,29 @@ class Agent:
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
         actions, ended = [], False
         failed = set()  # (tool, args) that already failed this turn
+        silent = 0  # replies in a row with no tool call
         while len(actions) < MAX_ACTIONS_PER_TURN and not ended:
             reply = chat(self.model, messages)
-            messages.append(reply)
-            calls = reply.get("tool_calls") or []
-            if reply.get("content"):
-                print(f"  model: {reply['content'].strip()[:300]}")
+            calls = reply.get("tool_calls") or extract_text_tool_calls(reply.get("content") or "")
+            # keep the transcript short: a long essay that did nothing just eats context
+            content = (reply.get("content") or "").strip()
+            if content:
+                print(f"  model: {content[:300]}")
+            messages.append({**reply, "content": content[:500]})
             if not calls:
-                # model stopped talking without ending the turn: nudge it with fresh state
-                messages.append({"role": "user", "content":
-                                 "Current state:\n" + self.describe(get_state(self.t)) +
-                                 "\n\nHandle anything left, then call end_turn."})
+                silent += 1
                 actions.append("(no tool call)")
+                if silent >= MAX_SILENT_REPLIES:
+                    print("  model keeps answering without calling tools; finishing the turn with defaults")
+                    break
+                # nudge briefly; re-sending the whole state grows the context until the
+                # system prompt falls out of Ollama's window and the model loops
+                todo = summarize(get_state(self.t)).split("TO DO THIS TURN")[-1].strip(" :")
+                messages.append({"role": "user", "content":
+                                 "You wrote text but called no tools, so nothing happened in the game. "
+                                 "Respond ONLY with tool calls now. Still to do: " + todo})
                 continue
+            silent = 0
             for call in calls:
                 name, args = call["function"]["name"], call["function"].get("arguments") or {}
                 key = (name, json.dumps(args, sort_keys=True))
@@ -359,5 +437,5 @@ class Agent:
                 self.wait_for_human(get_state(self.t)["blocking"])
         # only what worked; replaying failures back to the model invites repeats
         self.last_turn_actions = [x for x in actions if x.endswith(" ok") and not x.startswith("end_turn")]
-        new_turn = self.a.wait_for_my_turn()
+        new_turn = self.a.wait_for_my_turn(on_wait=self.handle_screens_while_waiting)
         self.record(turn=s["turn"], ended=True, next_turn=new_turn)

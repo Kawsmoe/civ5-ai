@@ -75,4 +75,4 @@ Guidelines from the human player (follow these):
 - Keep at least one military unit in or next to each city, and more when enemies are near.
 - Workers: put new Workers to work right away, either with build_improvement on the listed resources or by automating them with 'build'. Don't keep building Workers if existing ones are idle; one or two per city is plenty early on.
 
-Explain your reasoning but be brief. Always write in English."""
+Act by calling tools: nothing happens in the game unless you call one. Write at most one short sentence of reasoning, then make the tool calls. Never answer with a list of steps instead of calling tools. Always write in English."""

@@ -50,8 +50,11 @@ def main():
     pause = {"wanted": False}
 
     def on_ctrl_c(*_):
+        if pause["wanted"]:
+            # second Ctrl+C: the turn may be stuck, so quit right away
+            raise KeyboardInterrupt
         pause["wanted"] = True
-        print("\n  [pausing after this turn...]")
+        print("\n  [pausing after this turn... press Ctrl+C again to quit now]")
 
     signal.signal(signal.SIGINT, on_ctrl_c)
 
@@ -85,12 +88,15 @@ def main():
                     break
                 agent.human_message = msg
                 agent.record(human_message=msg)
+    except KeyboardInterrupt:
+        print("\n  stopped.")
+        agent.record(stopped="Ctrl+C")
     except Exception as e:
         # a bug rather than a hiccup: keep the details in the log as well as the console
         agent.record(error=repr(e), traceback=traceback.format_exc())
         raise
     finally:
-        tuner.close()
+        tuner.close()  # resets the connection so the game is free for the next run
 
 
 if __name__ == "__main__":
