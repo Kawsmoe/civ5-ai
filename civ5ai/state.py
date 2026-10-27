@@ -25,7 +25,7 @@ def parse(lines):
              "ideology_options": [], "ranged_targets": [], "civs": [], "spies": [],
              "spy_targets": [], "steal_options": [], "great_person_options": [],
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
-             "new_city_sites": [], "threats": []}
+             "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": []}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -53,7 +53,7 @@ def parse(lines):
                 "moves": _num(f[4]), "max_moves": _num(f[5]), "hp": _num(f[6]),
                 "activity": int(f[7]), "automated": f[8] == "true",
                 "combat": f[9] == "true", "sites": [], "promotions": [], "missions": [],
-                "routes": [], "steps": [], "builds": [], "work_targets": []}
+                "routes": [], "steps": [], "builds": [], "work_targets": [], "enemies_near": 0}
         elif tag == "S":
             state["units"][int(f[0])]["sites"].append(
                 {"x": int(f[1]), "y": int(f[2]), "value": int(f[3]), "dist": int(f[4]),
@@ -70,7 +70,29 @@ def parse(lines):
                  "near": f[4], "info": f[5]})
         elif tag == "E":
             state["enemies"].append({"x": int(f[0]), "y": int(f[1]), "owner": f[2],
-                                     "type": f[3], "hp": _num(f[4])})
+                                     "type": f[3], "hp": _num(f[4]),
+                                     "strength": _num(f[5]) if len(f) > 5 else None,
+                                     "ranged": _num(f[6]) if len(f) > 6 else None})
+        elif tag == "ME":
+            state["me"] = {"might": _num(f[0]), "techs": _num(f[1]), "policies": _num(f[2]),
+                           "branches": _num(f[3]), "tourism": _num(f[4])}
+        elif tag == "CV":
+            state["rivals"][int(f[0])] = {
+                "id": int(f[0]), "name": f[1], "score": _num(f[2]), "cities": _num(f[3]),
+                "pop": _num(f[4]), "might": _num(f[5]), "era": f[6], "techs": _num(f[7]),
+                "policies": _num(f[8]), "branches": _num(f[9]), "tourism": _num(f[10]),
+                "religion": f[11], "attitude": f[12], "friends": f[13] == "true",
+                "denounced_us": f[14] == "true", "we_denounced": f[15] == "true",
+                "dist": _num(f[16]), "their_city": f[17], "our_city": f[18],
+                "opinions": [], "wonders": []}
+        elif tag == "CO":
+            state["rivals"][int(f[0])]["opinions"].append(_clean(f[1], 90))
+        elif tag == "CW":
+            state["rivals"][int(f[0])]["wonders"].append(f[1])
+        elif tag == "RW":
+            state["rival_relations"].append({"a": int(f[0]), "b": int(f[1]), "kind": f[2]})
+        elif tag == "ND":
+            state["units"][int(f[0])]["enemies_near"] = int(f[1])
         elif tag == "L":
             state.update({"culture_stored": _num(f[0]), "policy_cost": _num(f[1]),
                           "free_policies": _num(f[2]), "policy_due": f[3] == "true"})
@@ -107,7 +129,9 @@ def parse(lines):
         elif tag == "RT":
             state["ranged_targets"].append({"kind": f[0], "id": int(f[1]),
                                             "x": int(f[2]), "y": int(f[3]),
-                                            "forecast": f[4] if len(f) > 4 else ""})
+                                            "forecast": f[4] if len(f) > 4 else "",
+                                            "dealt": _num(f[5]) if len(f) > 5 else None,
+                                            "taken": _num(f[6]) if len(f) > 6 else None})
         elif tag == "K":
             state["civs"].append({"id": int(f[0]), "kind": f[1], "name": f[2],
                                   "at_war": f[3] == "true", "can_declare": f[4] == "true",
@@ -211,12 +235,8 @@ def summarize(s):
         out.extend(f"    {b['type']}: {b['text']}" for b in options)
 
     # Other civs, espionage and one-off choices
-    majors = [c for c in s["civs"] if c["kind"] == "MAJOR"]
+    out.extend(_rivals_section(s))
     minors = [c for c in s["civs"] if c["kind"] == "MINOR"]
-    if majors:
-        out.append("Civs you know: " + "; ".join(
-            f"player {c['id']} {c['name']} (score {c['score']}"
-            + (", AT WAR" if c["at_war"] else "") + ")" for c in majors))
     if minors:
         out.append("City-states you know: " + "; ".join(
             f"player {c['id']} {c['name']} (influence {c['influence']}"
@@ -299,8 +319,13 @@ def summarize(s):
         strength = ""
         if u["strength"]:
             strength = f" strength {u['strength']}" + (f" ranged {u['ranged']}" if u["ranged"] else "")
+        danger = ""
+        if u["enemies_near"]:
+            danger = f" - {u['enemies_near']} enemy unit(s) within 2 tiles"
+            if u["hp"] is not None and u["hp"] < 50:
+                danger += ", BADLY HURT: consider pulling back to heal"
         out.append(f"  unit {u['id']} {u['type']} at ({u['x']},{u['y']}) "
-                   f"moves {u['moves']}/{u['max_moves']} hp {u['hp']}{strength}{flag}")
+                   f"moves {u['moves']}/{u['max_moves']} hp {u['hp']}/100{strength}{flag}{danger}")
         if u["promotions"]:
             out.append("    PROMOTION READY: " + ", ".join(u["promotions"]))
         if u["missions"]:
@@ -349,12 +374,15 @@ def summarize(s):
     if s["enemies"]:
         out.append("\nHostile units in sight:")
         for e in s["enemies"]:
-            out.append(f"  {e['owner']} {e['type']} at ({e['x']},{e['y']}) hp {e['hp']}")
+            power = f", strength {e['strength']}" if e.get("strength") else ""
+            if e.get("ranged"):
+                power += f", ranged {e['ranged']}"
+            out.append(f"  {e['owner']} {e['type']} at ({e['x']},{e['y']}) hp {e['hp']}{power}")
         for t in attack_options(s):
-            odds = f", forecast: {t['forecast']}" if t["forecast"] else ""
+            odds = (f", forecast: {t['forecast']}" if t["forecast"] else "") + _damage_text(t, s)
             where = f"({t['x']},{t['y']})"
             if t["kind"] == "CITY":
-                out.append(f"  city {t['id']} can shoot {where} now (city_attack)")
+                out.append(f"  city {t['id']} can shoot {where} now (city_attack{odds})")
             elif t["kind"] == "UNIT":
                 out.append(f"  unit {t['id']} can shoot {where} now (attack{odds})")
             elif t["kind"] == "MELEE":
@@ -436,6 +464,65 @@ def summarize(s):
         out.append("OPPORTUNITIES: " + "; ".join(chances))
     out.append("Then call end_turn.")
     return "\n".join(out)
+
+
+def _ratio(theirs, ours):
+    if not ours or theirs in (None, ""):
+        return "?"
+    return f"{theirs / ours:.1f}x yours"
+
+
+def _rivals_section(s):
+    """One block per known major civ: strength vs. us, attitude, relations, proximity, wonders."""
+    if not s["rivals"]:
+        return []
+    me = s["me"] or {}
+    at_war = {c["id"] for c in s["civs"] if c["at_war"]}
+    out = ["\nOther civilizations:"]
+    out.append(f"  You: military might {me.get('might')}, {me.get('techs')} techs, {me.get('policies')} policies, "
+               f"tourism {me.get('tourism')}.")
+    names = {r["id"]: r["name"] for r in s["rivals"].values()}
+    for r in s["rivals"].values():
+        techs = ""
+        if isinstance(r["techs"], int) and isinstance(me.get("techs"), int):
+            diff = r["techs"] - me["techs"]
+            techs = f", {abs(diff)} techs {'ahead of' if diff > 0 else 'behind'} you" if diff else ", same techs as you"
+        relation = ["AT WAR WITH YOU"] if r["id"] in at_war else []
+        if r["friends"]:
+            relation.append("declared friendship with you")
+        if r["denounced_us"]:
+            relation.append("has DENOUNCED you")
+        if r["we_denounced"]:
+            relation.append("you denounced them")
+        near = (f" Nearest city {r['their_city']} is {r['dist']} tiles from your {r['our_city']}."
+                if r["dist"] not in (None, "") else " None of their cities seen yet.")
+        out.append(f"  player {r['id']} {r['name']}: score {r['score']}, {r['cities']} cities (pop {r['pop']}), "
+                   f"military {_ratio(r['might'], me.get('might'))}, {r['era']} era{techs}, "
+                   f"{r['policies']} policies, tourism {r['tourism']}"
+                   + (f", founded {r['religion']}" if r["religion"] else "") + ".")
+        out.append(f"    Attitude toward you: {r['attitude']}" + (" (" + ", ".join(relation) + ")" if relation else "")
+                   + "." + near)
+        if r["opinions"]:
+            out.append("    Why: " + "; ".join(r["opinions"][:6]))
+        if r["wonders"]:
+            out.append("    Wonders: " + ", ".join(r["wonders"]))
+    for rel in s["rival_relations"]:
+        a, b = names.get(rel["a"], rel["a"]), names.get(rel["b"], rel["b"])
+        out.append(f"  {a} and {b}: {rel['kind'].replace('_', ' ').lower()}")
+    return out
+
+
+def _damage_text(t, s):
+    """'you deal ~35 (enemy 100->65), take ~20 (you 100->80)' from the game's own estimate."""
+    if t["dealt"] in (None, ""):
+        return ""
+    enemy = next((e for e in s["enemies"] if (e["x"], e["y"]) == (t["x"], t["y"])), None)
+    ehp = enemy["hp"] if enemy and enemy["hp"] is not None else 100
+    text = f"; deals ~{t['dealt']} damage (enemy hp {ehp} -> {max(0, ehp - t['dealt'])})"
+    if t["kind"] in ("MELEE", "NEAR") and t["taken"] not in (None, ""):
+        mine = s["units"].get(t["id"], {}).get("hp", 100)
+        text += f", takes ~{t['taken']} (your hp {mine} -> {max(0, mine - t['taken'])})"
+    return text
 
 
 # the game's combat forecasts, best first

@@ -45,7 +45,10 @@ Combat:
 - The state gives the game's own forecast for each possible attack (total/major/small victory, stalemate, small/major/total defeat). Scouts and workers are weak or can't fight; use military units.
 - Barbarian camps are cleared by defeating the unit guarding them and then moving onto the camp; an empty camp is cleared just by moving in (attack or move_unit).
 - Units on a multi-turn move order use their moves at the start of each turn; the state shows where they are heading, and a new move_unit or attack replaces the old order.
-- Damaged units heal when they skip or fortify, faster in your own territory and cities. Strength values are shown per unit; terrain (hills, forest, rivers) and flanking change combat odds.
+- Every unit has 100 hp and dies at 0. Damaged units fight weaker, so a hurt unit loses fights it would win at full health. The state gives the game's own estimate for each possible attack: damage you deal and damage you take, with hp before and after. An attack is good when it kills the target or deals clearly more than it costs; it is bad if you would end up lower than the enemy.
+- Focus fire: several attacks (ranged units and cities first, then melee) on one target kill it in a turn; spreading attacks lets every enemy heal.
+- Healing per turn when a unit doesn't move or attack (skip or fortify): about 10 hp in neutral or enemy land, 20 in your territory, 25 in a city. Pull badly hurt units back before they die; units marked with enemies nearby are in danger.
+- Strength values are shown for your units and enemies; terrain (hills, forest, rivers), fortifying, and flanking (several of your units next to the target) change the odds.
 - Units gain experience fighting and get a promotion choice when enough is earned (promote).
 
 Other:
@@ -54,6 +57,7 @@ Other:
 - An ideology (Freedom, Order, Autocracy) is chosen in the Industrial era or later and shapes late-game policies.
 
 Diplomacy and the wider world:
+- The "Other civilizations" section shows each rival you've met: score, cities, military size compared with yours, era and techs compared with yours, policies, tourism, religion and wonders, their attitude toward you (FRIENDLY, NEUTRAL, GUARDED, AFRAID, DECEPTIVE, HOSTILE, WAR - your best guess, as in the game's diplomacy screen) and the reasons they give, plus wars and friendships between rivals. Use it: a hostile neighbour with a bigger army is a danger, a rival far ahead in techs is close to a science victory, high tourism means a culture threat, many wonders or policies show where they invest.
 - Other leaders sometimes talk to you: warnings, requests, trade offers, demands. The state shows what they said and your numbered options; answer with respond_to_leader. Refusing demands can anger them; accepting deals gives and takes exactly what is listed.
 - declare_war starts a war with a civ or city-state; peace treaties block it for a while. Other civs remember who attacks whom.
 - City-states give bonuses to civs with high influence; quests, gifts and protecting them raise influence.

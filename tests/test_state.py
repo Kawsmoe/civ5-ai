@@ -28,11 +28,17 @@ SNAPSHOT = [
     T.join(["U", "24576", "UNIT_SCOUT", "15", "27", "0", "2", "100", "0", "true", "true"]),
     T.join(["UX", "24576", "5", "0", "0", "10", "false", "70,39"]),
     T.join(["POI", "RUINS", "16", "20", "16385", "3"]),
-    T.join(["E", "17", "21", "Barbarians", "UNIT_BARBARIAN_WARRIOR", "100"]),
-    T.join(["RT", "MELEE", "16385", "17", "21", "major victory"]),
-    T.join(["RT", "MELEE", "16385", "17", "21", "small defeat"]),  # second unit on the tile
+    T.join(["E", "17", "21", "Barbarians", "UNIT_BARBARIAN_WARRIOR", "100", "8", "0"]),
+    T.join(["RT", "MELEE", "16385", "17", "21", "major victory", "40", "15"]),
+    T.join(["RT", "MELEE", "16385", "17", "21", "small defeat", "20", "45"]),  # second unit on the tile
     T.join(["TH", "8192", "Rio de Janeiro", "17", "21", "UNIT_BARBARIAN_WARRIOR", "2"]),
     T.join(["K", "2", "MAJOR", "Rome", "false", "true", "120", ""]),
+    T.join(["ME", "50", "12", "2", "0", "3"]),
+    T.join(["CV", "2", "Rome", "120", "4", "15", "90", "classical", "16", "3", "0", "5", "",
+            "GUARDED", "false", "false", "false", "7", "Antium", "Rio de Janeiro"]),
+    T.join(["CO", "2", "[COLOR_NEGATIVE_TEXT]You have settled too near them[ENDCOLOR]"]),
+    T.join(["CW", "2", "PYRAMID"]),
+    T.join(["ND", "16385", "1"]),
 ]
 
 
@@ -80,11 +86,16 @@ class SummarizeTest(unittest.TestCase):
         for expected in ["Turn 12 - you are Brazil.", "Researching TECH_POTTERY (4 turns left).",
                          "city 8192 Rio de Janeiro", "can buy now with gold: UNIT_WARRIOR (120)",
                          "unit 16385 UNIT_WARRIOR", "NEEDS ORDERS", "can step to: (12,23) grassland",
-                         "ANCIENT RUINS", "Barbarians UNIT_BARBARIAN_WARRIOR", "player 2 Rome",
+                         "ANCIENT RUINS", "Barbarians UNIT_BARBARIAN_WARRIOR at (17,21) hp 100, strength 8",
+                         "player 2 Rome: score 120, 4 cities (pop 15), military 1.8x yours, classical era, 4 techs ahead of you",
+                         "Attitude toward you: GUARDED. Nearest city Antium is 7 tiles from your Rio de Janeiro.",
+                         "Why: You have settled too near them", "Wonders: PYRAMID",
+                         "1 enemy unit(s) within 2 tiles",
+                         "deals ~20 damage (enemy hp 100 -> 80), takes ~45 (your hp 100 -> 55)",
                          "land around it: grassland 9, plains hills 4, coast 6; 5 river tiles, coastal",
                          "WINE (luxury) at (20,24) UNIMPROVED",
                          "(24,20) score 100, 5 tiles from Rio de Janeiro [fresh water, hills; IRON, 1 bonus]",
-                         "unit 16385 is next to (17,21) and can attack it now (attack, forecast: small defeat)",
+                         "unit 16385 is next to (17,21) and can attack it now (attack, forecast: small defeat;",
                          "THREATS: UNIT_BARBARIAN_WARRIOR at (17,21), 2 tiles from Rio de Janeiro",
                          "on its way to (70,39) from an earlier order"]:
             self.assertIn(expected, self.text)

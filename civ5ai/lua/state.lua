@@ -31,14 +31,23 @@
 --                   UB   unit id, build type, turns (what an idle worker can build where it stands)
 --                   WT   unit id, x, y, resource, build type, distance (unimproved resources it can improve)
 --                   TR   unit id, x, y, city, connection type, gold, science, food, production
---   Map             E    x, y, owner, unit type, hp (hostile units near us)
---                   RT   UNIT|MELEE|NEAR|CITY, attacker id, target x, target y, forecast
+--   Map             E    x, y, owner, unit type, hp, strength, ranged strength (hostile units near us)
+--                   RT   UNIT|MELEE|NEAR|CITY, attacker id, target x, target y, forecast,
+--                        damage dealt, damage taken (game's own estimate)
 --                        (UNIT/CITY: ranged target in range; MELEE: adjacent; NEAR: within 3)
 --                   TH   city id, city name, enemy x, y, enemy unit type, distance (enemies near cities)
 --                   POI  RUINS|BARBARIAN_CAMP, x, y, nearest unit id, distance
 --                   NS   x, y, found value, distance to nearest city, that city, site info
 --                        (best spots for new cities around the empire)
 --   Other players   K    player id, MAJOR|MINOR, name, at war, can declare war, score, influence
+--                   ME   our military might, techs, policies, branches finished, tourism
+--                   CV   rival civ: id, name, score, cities, pop, military might, era, techs,
+--                        policies, branches, tourism, religion, attitude to us, friends,
+--                        they denounced us, we denounced them, nearest dist, their city, our city
+--                   CO   rival id, reason for its opinion of us
+--                   CW   rival id, world wonder built
+--                   RW   player a, player b, AT_WAR|FRIENDS|DENOUNCED
+--                   ND   unit id, visible enemies within 2 tiles
 --                   SPY  spy id, name, rank, state, city owner id, city id
 --                   SC   city owner id, city id, city name, owner name, potential
 --   Choices due     ST   player id, tech we can steal from them
@@ -268,7 +277,8 @@ local function scanEnemies(x, y, radius)
 						seenEnemy[key] = true
 						emit("E", plot:GetX(), plot:GetY(),
 							owner:IsBarbarian() and "Barbarians" or owner:GetCivilizationShortDescription(),
-							GameInfo.Units[eu:GetUnitType()].Type, 100 - eu:GetDamage())
+							GameInfo.Units[eu:GetUnitType()].Type, 100 - eu:GetDamage(),
+							eu:GetBaseCombatStrength(), eu:GetBaseRangedCombatStrength())
 					end
 				end
 			end
@@ -416,6 +426,24 @@ local function forecast(u, eu)
 	return ok and PREDICTION[r] or ""
 end
 
+-- expected damage dealt and taken if u attacks eu now, computed like the game's
+-- combat preview (EnemyUnitPanel.lua): no randomness, capped at max hp
+local function damage(u, eu)
+	local ok, dealt, taken = pcall(function()
+		local from, to = u:GetPlot(), eu:GetPlot()
+		if u:GetBaseRangedCombatStrength() > 0 then
+			return u:GetRangeCombatDamage(eu, nil, false), 0
+		end
+		local mine = u:GetMaxAttackStrength(from, to, eu)
+		local theirs = eu:GetMaxDefenseStrength(to, u)
+		return u:GetCombatDamage(mine, theirs, u:GetDamage(), false, false, false),
+			eu:GetCombatDamage(theirs, mine, eu:GetDamage(), false, false, false)
+	end)
+	if not ok then return "", "" end
+	local maxHP = GameDefines.MAX_HIT_POINTS or 100
+	return math.min(dealt, maxHP), math.min(taken, maxHP)
+end
+
 for key in pairs(seenEnemy) do
 	local owner, id = key:match("^(%-?%d+):(%-?%d+)$")
 	local eu = Players[tonumber(owner)]:GetUnitByID(tonumber(id))
@@ -426,21 +454,35 @@ for key in pairs(seenEnemy) do
 			if u:MovesLeft() > 0 and u:IsCombatUnit() then
 				local d = Map.PlotDistance(u:GetX(), u:GetY(), ex, ey)
 				if u:GetBaseRangedCombatStrength() > 0 then
-					if u:CanRangeStrikeAt(ex, ey) then emit("RT", "UNIT", u:GetID(), ex, ey, forecast(u, eu)) end
+					if u:CanRangeStrikeAt(ex, ey) then emit("RT", "UNIT", u:GetID(), ex, ey, forecast(u, eu), damage(u, eu)) end
 				elseif d == 1 and u:CanMoveOrAttackInto(eplot) then
-					emit("RT", "MELEE", u:GetID(), ex, ey, forecast(u, eu))
+					emit("RT", "MELEE", u:GetID(), ex, ey, forecast(u, eu), damage(u, eu))
 				elseif d <= 3 then
 					-- attack() closes in first; still worth knowing the odds
-					emit("RT", "NEAR", u:GetID(), ex, ey, forecast(u, eu))
+					emit("RT", "NEAR", u:GetID(), ex, ey, forecast(u, eu), damage(u, eu))
 				end
 			end
 		end
 		for c in p:Cities() do
-			if c:CanRangeStrike() and c:CanRangeStrikeAt(ex, ey, true, true) then emit("RT", "CITY", c:GetID(), ex, ey, "") end
+			if c:CanRangeStrike() and c:CanRangeStrikeAt(ex, ey, true, true) then
+				local ok, dmg = pcall(function() return c:RangeCombatDamage(eu, nil) end)
+				emit("RT", "CITY", c:GetID(), ex, ey, "", ok and dmg or "", 0)
+			end
 			local d = Map.PlotDistance(c:GetX(), c:GetY(), ex, ey)
 			if d <= 3 then emit("TH", c:GetID(), c:GetName(), ex, ey, GameInfo.Units[eu:GetUnitType()].Type, d) end
 		end
 	end
+end
+
+-- ND: unit id, visible enemy units within 2 tiles (danger)
+for u in p:Units() do
+	local n = 0
+	for key in pairs(seenEnemy) do
+		local owner, id = key:match("^(%-?%d+):(%-?%d+)$")
+		local eu = Players[tonumber(owner)]:GetUnitByID(tonumber(id))
+		if eu and Map.PlotDistance(u:GetX(), u:GetY(), eu:GetX(), eu:GetY()) <= 2 then n = n + 1 end
+	end
+	if n > 0 then emit("ND", u:GetID(), n) end
 end
 
 local campId = GameInfo.Improvements.IMPROVEMENT_BARBARIAN_CAMP and GameInfo.Improvements.IMPROVEMENT_BARBARIAN_CAMP.ID or -2
@@ -502,6 +544,81 @@ for i = 0, GameDefines.MAX_CIV_PLAYERS - 1 do
 			team:IsAtWar(other:GetTeam()), team:CanDeclareWar(other:GetTeam()),
 			minor and "" or other:GetScore(),
 			minor and other:GetMinorCivFriendshipWithMajor(iPlayer) or "")
+	end
+end
+
+-- Rival civilizations: strength, attitude, relations, proximity, achievements.
+local APPROACH = {}
+for k, v in pairs(MajorCivApproachTypes or {}) do
+	APPROACH[v] = (tostring(k):gsub("^MAJOR_CIV_APPROACH_", ""))
+end
+
+local function techsKnown(player)
+	local ok, n = pcall(function() return Teams[player:GetTeam()]:GetTeamTechs():GetNumTechsKnown() end)
+	return ok and n or ""
+end
+
+local function eraName(player)
+	local era = GameInfo.Eras[player:GetCurrentEra()]
+	return era and era.Type:gsub("^ERA_", ""):lower() or "?"
+end
+
+-- ME: our own numbers, to compare against: military might, techs, policies, branches finished, tourism
+emit("ME", p:GetMilitaryMight(), techsKnown(p), p:GetNumPolicies(), p:GetNumPolicyBranchesFinished(), p:GetTourism())
+
+local WONDERS = {}
+for b in GameInfo.Buildings() do
+	local class = GameInfo.BuildingClasses[b.BuildingClass]
+	if class and class.MaxGlobalInstances == 1 then WONDERS[#WONDERS + 1] = b end
+end
+
+local majors = {}
+for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+	local other = Players[i]
+	if i ~= iPlayer and other:IsAlive() and team:IsHasMet(other:GetTeam()) then
+		majors[#majors + 1] = i
+		-- nearest of their cities we have seen, to any of our cities
+		local nearD, theirCity, ourCity = 999, "", ""
+		for tc in other:Cities() do
+			if tc:Plot():IsRevealed(team:GetID(), false) then
+				for c in p:Cities() do
+					local d = Map.PlotDistance(c:GetX(), c:GetY(), tc:GetX(), tc:GetY())
+					if d < nearD then nearD, theirCity, ourCity = d, tc:GetName(), c:GetName() end
+				end
+			end
+		end
+		local religion = other:HasCreatedReligion() and GameInfo.Religions[other:GetReligionCreatedByPlayer()].Type or ""
+		-- CV: id, name, score, cities, population, military might, era, techs, policies, branches
+		--     finished, tourism, religion, their attitude to us (our best guess), friends with us,
+		--     they denounced us, we denounced them, nearest distance, their city, our city
+		emit("CV", i, other:GetCivilizationShortDescription(), other:GetScore(), other:GetNumCities(),
+			other:GetTotalPopulation(), other:GetMilitaryMight(), eraName(other), techsKnown(other),
+			other:GetNumPolicies(), other:GetNumPolicyBranchesFinished(), other:GetTourism(), religion,
+			APPROACH[p:GetApproachTowardsUsGuess(i)] or "?", other:IsDoF(iPlayer),
+			other:IsDenouncedPlayer(iPlayer), p:IsDenouncedPlayer(i),
+			nearD < 999 and nearD or "", theirCity, ourCity)
+		-- CO: id, a reason the AI gives for its opinion of us (as shown in the game's diplomacy screen)
+		local ok, opinions = pcall(function() return other:GetOpinionTable(iPlayer) end)
+		if ok and type(opinions) == "table" then
+			for _, line in ipairs(opinions) do emit("CO", i, text(tostring(line))) end
+		end
+		-- CW: id, world wonder they have built
+		for tc in other:Cities() do
+			for _, b in ipairs(WONDERS) do
+				if tc:IsHasBuilding(b.ID) then emit("CW", i, (b.Type:gsub("^BUILDING_", ""))) end
+			end
+		end
+	end
+end
+
+-- RW: player a, player b, AT_WAR|FRIENDS|DENOUNCED (relations between rivals we know)
+for ai = 1, #majors do
+	for bi = ai + 1, #majors do
+		local a, b = Players[majors[ai]], Players[majors[bi]]
+		if Teams[a:GetTeam()]:IsAtWar(b:GetTeam()) then emit("RW", majors[ai], majors[bi], "AT_WAR")
+		elseif a:IsDoF(majors[bi]) then emit("RW", majors[ai], majors[bi], "FRIENDS")
+		elseif a:IsDenouncedPlayer(majors[bi]) or b:IsDenouncedPlayer(majors[ai]) then emit("RW", majors[ai], majors[bi], "DENOUNCED")
+		end
 	end
 end
 
