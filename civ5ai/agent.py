@@ -28,6 +28,7 @@ DEFAULT_MODEL = "qwen2.5:14b"
 # system prompt + tool definitions alone are ~5.5k tokens; leave room for state and replies
 MODEL_OPTIONS = {"temperature": 0.3, "num_ctx": 16384}
 MAX_ACTIONS_PER_TURN = 15
+MAX_FAILURES_PER_TOOL = 3  # a tool failing this often in one turn is refused until next turn
 MAX_SILENT_REPLIES = 2  # text-only replies in a row before falling back to defaults
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -370,6 +371,7 @@ class Agent:
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
         actions, ended = [], False
         failed = set()  # (tool, args) that already failed this turn
+        failures_by_tool = {}  # tool -> failures this turn, whatever the arguments
         silent = 0  # replies in a row with no tool call
         while len(actions) < MAX_ACTIONS_PER_TURN and not ended:
             reply = chat(self.model, messages)
@@ -396,7 +398,12 @@ class Agent:
             for call in calls:
                 name, args = call["function"]["name"], call["function"].get("arguments") or {}
                 key = (name, json.dumps(args, sort_keys=True))
-                if key in failed and name != "end_turn":
+                if failures_by_tool.get(name, 0) >= MAX_FAILURES_PER_TOOL and name != "end_turn":
+                    # different arguments, same dead end (e.g. farms everywhere while the tech is missing)
+                    result = (f"error: {name} has failed {failures_by_tool[name]} times this turn; stop trying it "
+                              "until next turn. Read the reasons in those errors (often a missing tech: research "
+                              "it), or automate the unit, then do something else or call end_turn.")
+                elif key in failed and name != "end_turn":
                     # small models loop on a failing call; refuse instead of re-running it
                     result = ("error: you already tried exactly this and it failed. "
                               "Do something different, or call end_turn if nothing else is required.")
@@ -404,6 +411,7 @@ class Agent:
                     result = self.do(name, args, s)
                     if result.startswith("error"):
                         failed.add(key)
+                        failures_by_tool[name] = failures_by_tool.get(name, 0) + 1
                         if "no unit with id" in result:
                             result = self.unknown_unit_message(args, s) or result + ". " + self.unit_roster(s)
                 if result.startswith("ok"):

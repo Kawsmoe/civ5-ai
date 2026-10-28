@@ -6,7 +6,7 @@ import time
 import traceback
 import urllib.error
 
-from .agent import DEFAULT_MODEL, Agent
+from .agent import DEFAULT_MODEL, MODEL_OPTIONS, Agent
 from .tuner import Tuner, TunerError
 
 # Problems talking to the game or to Ollama: worth reconnecting and retrying the turn.
@@ -43,7 +43,11 @@ def main():
                     help="stop after this many turns (Ctrl+C then q also stops)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model (default {DEFAULT_MODEL})")
     ap.add_argument("--say", default="", help="direction for the model on its first turn")
+    ap.add_argument("--ctx", type=int, default=MODEL_OPTIONS["num_ctx"],
+                    help=f"model context size in tokens (default {MODEL_OPTIONS['num_ctx']}); "
+                         "lower it if the model doesn't fit on the GPU next to the game")
     args = ap.parse_args()
+    MODEL_OPTIONS["num_ctx"] = args.ctx
 
     # Ctrl+C asks for a pause instead of killing the run mid-command (which
     # could leave the game half-way through an action); we pause between turns.

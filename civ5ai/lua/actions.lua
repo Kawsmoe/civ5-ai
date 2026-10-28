@@ -605,6 +605,51 @@ end
 
 -- Workers -------------------------------------------------------------------
 
+local function hasTech(techType)
+	local tech = techType and GameInfo.Technologies[techType]
+	return tech == nil or Teams[me():GetTeam()]:IsHasTech(tech.ID)
+end
+
+-- the build that improves the resource on a plot, and the tech still missing for it (or nil):
+-- e.g. "BUILD_PLANTATION", "TECH_CALENDAR". Also used by state.lua.
+function _AI.resource_need(plot)
+	local rid = plot:GetResourceType(me():GetTeam())
+	if rid == nil or rid < 0 or GameInfo.Resources[rid] == nil then return nil end
+	for row in GameInfo.Improvement_ResourceTypes{ResourceType = GameInfo.Resources[rid].Type} do
+		for b in GameInfo.Builds{ImprovementType = row.ImprovementType} do
+			local missing = not hasTech(b.PrereqTech) and b.PrereqTech or nil
+			local f = plot:GetFeatureType()
+			if not missing and f >= 0 and GameInfo.Features[f] then
+				for bf in GameInfo.BuildFeatures{BuildType = b.Type, FeatureType = GameInfo.Features[f].Type} do
+					if not hasTech(bf.PrereqTech) then missing = bf.PrereqTech end
+				end
+			end
+			return b.Type, missing
+		end
+	end
+	return nil
+end
+
+-- why build b can't go on plot, in words the model can act on
+local function whyCannotBuild(plot, b)
+	if plot:GetOwner() ~= Game.GetActivePlayer() and b.ImprovementType then return "the tile is outside your borders" end
+	if not hasTech(b.PrereqTech) then return b.Type .. " needs " .. b.PrereqTech end
+	local f = plot:GetFeatureType()
+	if f >= 0 and GameInfo.Features[f] then
+		for bf in GameInfo.BuildFeatures{BuildType = b.Type, FeatureType = GameInfo.Features[f].Type} do
+			if not hasTech(bf.PrereqTech) then
+				return "the " .. GameInfo.Features[f].Type:gsub("^FEATURE_", ""):lower() .. " must be cleared first, which needs " .. bf.PrereqTech
+			end
+		end
+	end
+	if b.ImprovementType and plot:GetImprovementType() >= 0 then return "the tile already has an improvement" end
+	local need, missing = _AI.resource_need(plot)
+	if need and need ~= b.Type then
+		return "this resource needs " .. need .. (missing and (", which needs " .. missing) or "") .. ", not " .. b.Type
+	end
+	return b.Type .. " can't be built on this terrain"
+end
+
 -- build an improvement (BUILD_FARM, BUILD_MINE, BUILD_ROAD...) on the worker's
 -- tile, or on (x, y): the worker walks there and starts building on arrival
 function _AI.build_improvement(uid, buildType, x, y)
@@ -616,9 +661,11 @@ function _AI.build_improvement(uid, buildType, x, y)
 	if plot == nil then return "error: (" .. tostring(x) .. "," .. tostring(y) .. ") is off the map" end
 	local where = "(" .. plot:GetX() .. "," .. plot:GetY() .. ")"
 	if not u:CanBuild(plot, b.ID) then
-		return "error: cannot build " .. buildType .. " at " .. where .. " (wrong terrain, missing tech, or already built)"
+		return "error: cannot build " .. buildType .. " at " .. where .. ": " .. whyCannotBuild(plot, b)
 	end
+	-- the game only knows the build time once a worker stands on the tile (INT_MAX otherwise)
 	local turns = plot:GetBuildTurnsLeft(b.ID, Game.GetActivePlayer(), 0, 0)
+	if turns > 1000 then turns = "?" end
 	if plot:GetX() == u:GetX() and plot:GetY() == u:GetY() then
 		u:PushMission(MissionTypes.MISSION_BUILD, b.ID, -1, 0, 0)
 		return "ok: " .. name(u) .. " is building " .. buildType .. " at " .. where .. " (about " .. turns .. " turns)"

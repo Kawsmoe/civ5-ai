@@ -25,7 +25,8 @@ def parse(lines):
              "ideology_options": [], "ranged_targets": [], "civs": [], "spies": [],
              "spy_targets": [], "steal_options": [], "great_person_options": [],
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
-             "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": []}
+             "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": [],
+             "unexplored": None}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -63,7 +64,8 @@ def parse(lines):
                 {"land": f[1], "river_tiles": _num(f[2]), "coastal": f[3] == "true"})
         elif tag == "CR":
             state["cities"][int(f[0])]["resources"].append(
-                {"type": f[1], "class": f[2], "x": int(f[3]), "y": int(f[4]), "improved": f[5] == "true"})
+                {"type": f[1], "class": f[2], "x": int(f[3]), "y": int(f[4]), "improved": f[5] == "true",
+                 "needs": f[6] if len(f) > 6 else "", "missing_tech": f[7] if len(f) > 7 else ""})
         elif tag == "NS":
             state["new_city_sites"].append(
                 {"x": int(f[0]), "y": int(f[1]), "value": int(f[2]), "dist": int(f[3]),
@@ -91,6 +93,8 @@ def parse(lines):
             state["rivals"][int(f[0])]["wonders"].append(f[1])
         elif tag == "RW":
             state["rival_relations"].append({"a": int(f[0]), "b": int(f[1]), "kind": f[2]})
+        elif tag == "EX":
+            state["unexplored"] = {"unseen": int(f[0]), "total": int(f[1])}
         elif tag == "ND":
             state["units"][int(f[0])]["enemies_near"] = int(f[1])
         elif tag == "L":
@@ -121,7 +125,8 @@ def parse(lines):
             state["units"][int(f[0])].update({"strength": _num(f[1]), "ranged": _num(f[2]),
                                               "xp": _num(f[3]), "xp_needed": _num(f[4]),
                                               "promotion_ready": f[5] == "true",
-                                              "destination": f[6] if len(f) > 6 else ""})
+                                              "destination": f[6] if len(f) > 6 else "",
+                                              "activity_name": f[7] if len(f) > 7 else ""})
         elif tag == "UP":
             state["units"][int(f[0])]["promotions"].append(f[1])
         elif tag == "UM":
@@ -287,8 +292,8 @@ def summarize(s):
             out.append(f"    land around it: {c['land']}; {c['river_tiles']} river tiles{water}")
         if c["resources"]:
             out.append("    resources nearby: " + "; ".join(
-                f"{r['type']} ({r['class']}) at ({r['x']},{r['y']})"
-                + ("" if r["improved"] else " UNIMPROVED") for r in c["resources"]))
+                f"{r['type']} ({r['class']}) at ({r['x']},{r['y']})" + _resource_status(r)
+                for r in c["resources"]))
         builds = sorted(c["can_build"], key=lambda b: b["turns"])
         out.append("    can build: " + ", ".join(f"{b['type']} ({b['turns']}t)" for b in builds))
         for currency in ("GOLD", "FAITH"):
@@ -310,6 +315,8 @@ def summarize(s):
         elif u.get("destination"):
             flag = (f" (on its way to ({u['destination']}) from an earlier order; "
                     "move_unit or attack to give it a new one)")
+        elif u.get("activity_name") in ("FORTIFIED", "SLEEP", "SENTRY") and u["moves"] > 0:
+            flag = f" ({u['activity_name'].lower()} - idle; give it a new order any time)"
         elif u["moves"] == 0:
             flag = " (no moves left this turn)"
         elif u["automated"]:
@@ -357,6 +364,11 @@ def summarize(s):
         out.append("  You have NO Settler now (it was used up founding a city). "
                    + ("A new UNIT_SETTLER can be built in: " + ", ".join(where) if where
                       else "Settlers can't be built yet (cities need to grow first)."))
+
+    ex = s["unexplored"]
+    if ex and ex["unseen"]:
+        out.append(f"\nUnexplored land: {ex['unseen']} of the {ex['total']} tiles within 8 of your capital "
+                   "are still unexplored.")
 
     if s["new_city_sites"]:
         best = s["new_city_sites"][0]["value"]
@@ -460,10 +472,24 @@ def summarize(s):
             t = u["work_targets"][0]
             chances.append(f"unit {u['id']} could build {t['build']} on {t['resource']} at "
                            f"({t['x']},{t['y']}) (build_improvement)")
+    if ex and ex["unseen"] > ex["total"] // 4 and not s["threats"]:
+        idle = [u for u in s["units"].values() if u["combat"] and u["moves"] > 0
+                and (needs_orders(u) or u.get("activity_name") in ("FORTIFIED", "SLEEP", "SENTRY"))]
+        if idle:
+            chances.append(f"unit {idle[0]['id']} {idle[0]['type']} could explore ({ex['unseen']} nearby tiles "
+                           "unexplored, no enemies near your cities; automate explore or move_unit)")
     if chances:
         out.append("OPPORTUNITIES: " + "; ".join(chances))
     out.append("Then call end_turn.")
     return "\n".join(out)
+
+
+def _resource_status(r):
+    if r["improved"]:
+        return ""
+    if r.get("missing_tech"):
+        return f" UNIMPROVED - needs {r['needs']}, which needs {r['missing_tech']}"
+    return f" UNIMPROVED - {r['needs']} possible now" if r.get("needs") else " UNIMPROVED"
 
 
 def _ratio(theirs, ours):

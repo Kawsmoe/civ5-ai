@@ -14,16 +14,18 @@
 --                   RB   belief choice: kind, type, description (when due)
 --                   RR   religion that can be founded (when due)
 --                   IO   ideology choice (when due)
+--                   EX   unexplored tiles within 8 of the capital, total tiles there
 --   Cities          C    id, name, x, y, pop, food surplus, production, producing,
 --                        production turns left, turns to grow
 --                   CX   id, hp, max hp, defense, religious majority
 --                   CT   city id, terrain counts in its 3-tile radius, river tiles, coastal
---                   CR   city id, resource, class, x, y, improved (resources in its radius)
+--                   CR   city id, resource, class, x, y, improved, improvement needed, tech missing
 --                   B    city id, UNIT|BUILDING, type, turns
 --                   BUY  city id, GOLD|FAITH, type, cost (only what we can afford now)
 --   Units           U    id, type, x, y, moves, max moves, hp, activity, automated, combat
 --                   UX   id, strength, ranged strength, xp, xp needed, promotion ready,
---                        destination "x,y" of an earlier move order ("" if none)
+--                        destination "x,y" of an earlier move order ("" if none), activity
+--                        (FORTIFIED, SLEEP, MISSION, AWAKE...)
 --                   UP   unit id, promotion it can take now
 --                   UM   unit id, special mission it can do here now
 --                   NB   unit id, x, y, terrain (adjacent tiles it can step onto now)
@@ -139,6 +141,9 @@ local function beliefText(id)
 	return b.Type, text(b.ShortDescription) .. ": " .. text(b.Description)
 end
 
+local ACTIVITY_NAMES = {}
+for k, v in pairs(ActivityTypes) do ACTIVITY_NAMES[v] = (tostring(k):gsub("^ACTIVITY_", "")) end
+
 local blockNames = {}
 for k, v in pairs(EndTurnBlockingTypes) do
 	if v >= 0 then blockNames[v] = k:gsub("^ENDTURN_BLOCKING_", "") end
@@ -208,6 +213,17 @@ if blocking("CHOOSE_IDEOLOGY") then
 	end
 end
 
+-- EX: unexplored tiles within 8 of the capital, total tiles there
+local capital = p:GetCapitalCity()
+if capital then
+	local unseen, total = 0, 0
+	for _, plot in ipairs(plotsWithin(capital:GetX(), capital:GetY(), 8)) do
+		total = total + 1
+		if not plot:IsRevealed(team:GetID(), false) then unseen = unseen + 1 end
+	end
+	emit("EX", unseen, total)
+end
+
 -- Cities --------------------------------------------------------------------
 
 local buyYields = {GOLD = YieldTypes.YIELD_GOLD, FAITH = YieldTypes.YIELD_FAITH}
@@ -229,7 +245,15 @@ for c in p:Cities() do
 			counts[t] = counts[t] + 1
 			if plot:IsRiver() then river = river + 1 end
 			local res, class = resourceAt(plot)
-			if res then emit("CR", cid, res, class, plot:GetX(), plot:GetY(), plot:GetImprovementType() >= 0) end
+			if res then
+				-- which improvement it needs and the tech still missing ("" when ready); _AI comes from actions.lua
+				local need, missing = "", ""
+				if _AI and _AI.resource_need then
+					local b, m = _AI.resource_need(plot)
+					need, missing = b or "", m or ""
+				end
+				emit("CR", cid, res, class, plot:GetX(), plot:GetY(), plot:GetImprovementType() >= 0, need, missing)
+			end
 		end
 	end
 	table.sort(order, function(a, b) return counts[a] > counts[b] end)
@@ -387,8 +411,9 @@ for u in p:Units() do
 		local mp = u:LastMissionPlot()
 		if mp and (mp:GetX() ~= x or mp:GetY() ~= y) then dest = mp:GetX() .. "," .. mp:GetY() end
 	end
+	local activity = (u:GetFortifyTurns() > 0) and "FORTIFIED" or ACTIVITY_NAMES[u:GetActivityType()] or ""
 	emit("UX", uid, u:GetBaseCombatStrength(), u:GetBaseRangedCombatStrength(),
-		u:GetExperience(), u:ExperienceNeeded(), ready, dest)
+		u:GetExperience(), u:ExperienceNeeded(), ready, dest, activity)
 	if ready then
 		for promo in GameInfo.UnitPromotions() do
 			if u:CanPromote(promo.ID, -1) then emit("UP", uid, promo.Type) end
