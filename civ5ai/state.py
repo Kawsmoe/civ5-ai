@@ -26,7 +26,7 @@ def parse(lines):
              "spy_targets": [], "steal_options": [], "great_person_options": [],
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
              "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": [],
-             "unexplored": None}
+             "unexplored": None, "tech_goals": []}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -35,7 +35,9 @@ def parse(lines):
             state.update({k: (v if k in ("civ", "blocking", "research") else _num(v))
                           for k, v in zip(keys, f)})
         elif tag == "T":
-            state["techs"].append({"type": f[0], "turns": _num(f[1])})
+            state["techs"].append({"type": f[0], "turns": _num(f[1]), "unlocks": f[2] if len(f) > 2 else ""})
+        elif tag == "TP":
+            state["tech_goals"].append({"tech": f[0], "why": f[1], "path": f[2]})
         elif tag == "C":
             cid = int(f[0])
             state["cities"][cid] = {
@@ -210,7 +212,11 @@ def summarize(s):
     else:
         out.append("Researching: NOTHING - pick a tech.")
     techs = sorted(s["techs"], key=lambda t: t["turns"])
-    out.append("Techs available: " + ", ".join(f"{t['type']} ({t['turns']}t)" for t in techs))
+    out.append("Techs you can research now:")
+    out.extend(f"  {t['type']} ({t['turns']}t)" + (f": {t['unlocks']}" if t["unlocks"] else "") for t in techs)
+    if s["tech_goals"]:
+        out.append("Techs your land is waiting for (set_research takes the goal tech and queues the path):")
+        out.extend(f"  {g['tech']} - {g['why']}: {g['path']}" for g in s["tech_goals"])
 
     out.append(f"Social policies: {', '.join(s['policies']) or 'none yet'}. "
                f"Culture {s['culture_stored']}/{s['policy_cost']} toward the next one.")

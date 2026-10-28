@@ -24,6 +24,7 @@ Game rules worth knowing:
 - Each city and each citizen costs happiness. Negative happiness slows growth; at -10 or worse your units fight worse and rebels can appear.
 - If your gold reaches 0 while gold per turn is negative, units get disbanded.
 - Switching research or production loses some of the progress already made.
+- Research: the state lists what each available tech unlocks, and which techs the land around your cities is waiting for (with the path to them). set_research also takes a tech you can't research yet: the game queues its prerequisites in order, like clicking it on the tech tree.
 - Workers improve tiles with build_improvement (farms, mines, pastures, plantations, camps, quarries, roads...); improved tiles make cities grow and produce faster. Moving a Worker onto a tile does nothing by itself: it must build. Resources only pay off once improved with the right improvement (the state lists it), and many improvements need a tech first (Mining for mines, Animal Husbandry for pastures, Calendar for plantations, Trapping for camps, Masonry for quarries). Only tiles inside your borders can be improved. Automating a Worker ('build') lets the game choose for it.
 
 The land (study it every turn before deciding where to settle, what to build and where to send units):

@@ -5,7 +5,8 @@
 --
 --   Empire          P    turn, civ, gold, gold/turn, science, culture, faith, happiness,
 --                        end-turn blocker, current research, research turns left
---                   T    researchable tech, turns
+--                   T    researchable tech, turns, what it unlocks
+--                   TP   tech our land needs, what for, path to it
 --                   L    culture stored, next policy cost, free policies, choice due
 --                   A    adopted policy or branch
 --                   O    BRANCH|POLICY that can be adopted now (when a choice is due)
@@ -161,7 +162,7 @@ emit("P", Game.GetGameTurn(), p:GetCivilizationShortDescription(), p:GetGold(),
 
 for tech in GameInfo.Technologies() do
 	if p:CanResearch(tech.ID) and not team:IsHasTech(tech.ID) then
-		emit("T", tech.Type, p:GetResearchTurnsLeft(tech.ID, true))
+		emit("T", tech.Type, p:GetResearchTurnsLeft(tech.ID, true), _AI and _AI.tech_unlocks and _AI.tech_unlocks(tech) or "")
 	end
 end
 
@@ -222,6 +223,32 @@ if capital then
 		if not plot:IsRevealed(team:GetID(), false) then unseen = unseen + 1 end
 	end
 	emit("EX", unseen, total)
+end
+
+-- TP: tech the land around our cities needs, what for, path to it ("" if _AI isn't installed)
+if _AI and _AI.resource_need and _AI.tech_path then
+	local wanted, order = {}, {}
+	local function want(techType, why)
+		if techType == nil or techType == "" then return end
+		if not wanted[techType] then wanted[techType] = {} order[#order + 1] = techType end
+		wanted[techType][#wanted[techType] + 1] = why
+	end
+	for c in p:Cities() do
+		for _, plot in ipairs(plotsWithin(c:GetX(), c:GetY(), 3)) do
+			if plot:GetOwner() == iPlayer and plot:GetImprovementType() < 0 and plot:IsRevealed(team:GetID(), false) then
+				local build, missing = _AI.resource_need(plot)
+				local res = resourceAt(plot)
+				if missing and res then want(missing, (build:gsub("^BUILD_", ""):lower()) .. " for " .. res) end
+			end
+		end
+	end
+	local road = GameInfo.Builds.BUILD_ROAD
+	if road and road.PrereqTech and not team:IsHasTech(GameInfo.Technologies[road.PrereqTech].ID) then want(road.PrereqTech, "roads") end
+	for _, techType in ipairs(order) do
+		local seen, why = {}, {}
+		for _, w in ipairs(wanted[techType]) do if not seen[w] then seen[w] = true why[#why + 1] = w end end
+		emit("TP", techType, table.concat(why, ", "), _AI.describe_path(_AI.tech_path(GameInfo.Technologies[techType])))
+	end
 end
 
 -- Cities --------------------------------------------------------------------

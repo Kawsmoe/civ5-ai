@@ -8,7 +8,8 @@ T = "\t"
 # A small but complete snapshot, in the record format lua/state.lua prints.
 SNAPSHOT = [
     T.join(["P", "12", "Brazil", "40", "3", "6", "2", "1", "9", "UNITS", "TECH_POTTERY", "4"]),
-    T.join(["T", "TECH_ARCHERY", "7"]),
+    T.join(["T", "TECH_ARCHERY", "7", "units ARCHER"]),
+    T.join(["TP", "TECH_CALENDAR", "plantation for WINE", "TECH_POTTERY (3t) -> TECH_CALENDAR (8t), 11 turns"]),
     T.join(["T", "TECH_MINING", "5"]),
     T.join(["L", "8", "25", "0", "false"]),
     T.join(["A", "POLICY_BRANCH_TRADITION"]),
@@ -84,7 +85,8 @@ class SummarizeTest(unittest.TestCase):
         self.text = summarize(parse(SNAPSHOT))
 
     def test_sections(self):
-        for expected in ["Turn 12 - you are Brazil.", "Researching TECH_POTTERY (4 turns left).",
+        for expected in ["Turn 12 - you are Brazil.", "Researching TECH_POTTERY (4 turns left).", "  TECH_ARCHERY (7t): units ARCHER",
+                         "TECH_CALENDAR - plantation for WINE: TECH_POTTERY (3t) -> TECH_CALENDAR (8t), 11 turns",
                          "city 8192 Rio de Janeiro", "can buy now with gold: UNIT_WARRIOR (120)",
                          "unit 16385 UNIT_WARRIOR", "NEEDS ORDERS", "can step to: (12,23) grassland",
                          "ANCIENT RUINS", "Barbarians UNIT_BARBARIAN_WARRIOR at (17,21) hp 100, strength 8",
@@ -114,7 +116,7 @@ class SummarizeTest(unittest.TestCase):
 
     def test_minimal_snapshot(self):
         # turn 0: no cities, nothing optional present
-        s = parse(SNAPSHOT[:1] + [SNAPSHOT[3], SNAPSHOT[5]])
+        s = parse([line for line in SNAPSHOT if line.split(T)[0] in ("P", "L", "R")])
         self.assertIn("Cities: none yet.", summarize(s))
 
 

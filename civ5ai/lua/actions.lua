@@ -7,7 +7,7 @@
 --   Units       found_city, move_unit, fortify, sleep, skip, automate, promote,
 --               build_improvement,
 --               attack, unit_mission, trade_route
---   Empire      set_research, free_tech, set_production, buy, city_attack,
+--   Empire      set_research (also distant techs: queues the path), free_tech, set_production, buy, city_attack,
 --               adopt_policy, choose_ideology, end_turn
 --   Religion    found_pantheon (also Reformation), found_religion, enhance_religion
 --   Diplomacy   declare_war, diplo_vote, league_propose, league_vote, league_abstain
@@ -157,7 +157,13 @@ function _AI.set_research(techType)
 	local tech = GameInfo.Technologies[techType]
 	if tech == nil then return "error: unknown tech " .. tostring(techType) end
 	if Teams[p:GetTeam()]:IsHasTech(tech.ID) then return "error: already know " .. techType end
-	if not p:CanResearch(tech.ID) then return "error: cannot research " .. techType .. " yet (missing prerequisites)" end
+	if not p:CanResearch(tech.ID) then
+		-- like clicking a distant tech on the tech tree: the game queues its prerequisites
+		if not p:CanEverResearch(tech.ID) then return "error: you can never research " .. techType end
+		local path = _AI.tech_path(tech)
+		Network.SendResearch(tech.ID, 0, -1, false)
+		return "ok: " .. techType .. " needs other techs first; queued the path " .. _AI.describe_path(path)
+	end
 	Network.SendResearch(tech.ID, 0, -1, false)
 	return "ok: researching " .. techType
 end
@@ -601,6 +607,88 @@ function _AI.archaeology(choice, unitIndex)
 	if c == nil then return "error: choice must be LANDMARK, ARTIFACT, ARTIFACT_OTHER, CULTURE or WRITING" end
 	Network.SendArchaeologyChoice(Game.GetActivePlayer(), unitIndex, c)
 	return "ok: chose " .. choice
+end
+
+-- Tech tree -----------------------------------------------------------------
+
+-- techs still to research to reach `tech`, prerequisites first (all of a tech's prerequisites are required)
+function _AI.tech_path(tech, out, seen)
+	out, seen = out or {}, seen or {}
+	local team = Teams[me():GetTeam()]
+	if tech == nil or seen[tech.Type] or team:IsHasTech(tech.ID) then return out end
+	seen[tech.Type] = true
+	for row in GameInfo.Technology_PrereqTechs{TechType = tech.Type} do
+		_AI.tech_path(GameInfo.Technologies[row.PrereqTech], out, seen)
+	end
+	out[#out + 1] = tech
+	return out
+end
+
+-- "TECH_POTTERY (3t) -> TECH_CALENDAR (8t), 11 turns"
+function _AI.describe_path(path)
+	local p, parts, total = me(), {}, 0
+	for _, t in ipairs(path) do
+		local turns = p:GetResearchTurnsLeft(t.ID, true)
+		total = total + turns
+		parts[#parts + 1] = t.Type .. " (" .. turns .. "t)"
+	end
+	return table.concat(parts, " -> ") .. ", " .. total .. " turns"
+end
+
+-- what a tech gives you, short: "units ARCHER; buildings TEMPLE; improvements PLANTATION; reveals IRON"
+function _AI.tech_unlocks(tech)
+	local function names(iter, prefix)
+		local t = {}
+		for row in iter do t[#t + 1] = (row.Type:gsub(prefix, "")) end
+		return t
+	end
+	-- skip other civs' unique units/buildings (and barbarian units): we can never build them
+	local civ = GameInfo.Civilizations[me():GetCivilizationType()].Type
+	local function ours(tableName, field, typeName)
+		local overridden = false
+		for row in GameInfo[tableName]{[field] = typeName} do
+			overridden = true
+			if row.CivilizationType == civ then return true end
+		end
+		return not overridden
+	end
+	local parts = {}
+	local units = {}
+	for u in GameInfo.Units{PrereqTech = tech.Type} do
+		if not u.Type:find("BARBARIAN") and ours("Civilization_UnitClassOverrides", "UnitType", u.Type) then
+			units[#units + 1] = (u.Type:gsub("^UNIT_", ""))
+		end
+	end
+	local buildings = {}
+	for b in GameInfo.Buildings{PrereqTech = tech.Type} do
+
+		if ours("Civilization_BuildingClassOverrides", "BuildingType", b.Type) then
+			local class = GameInfo.BuildingClasses[b.BuildingClass]
+			local wonder = class and class.MaxGlobalInstances == 1
+			buildings[#buildings + 1] = (b.Type:gsub("^BUILDING_", "")) .. (wonder and " (wonder)" or "")
+		end
+	end
+	local improvements = {}
+	for b in GameInfo.Builds{PrereqTech = tech.Type} do
+		if b.ImprovementType or b.RouteType then
+			improvements[#improvements + 1] = ((b.ImprovementType or b.RouteType):gsub("^IMPROVEMENT_", ""):gsub("^ROUTE_", ""))
+		end
+	end
+	for bf in GameInfo.BuildFeatures{PrereqTech = tech.Type} do
+		local f = GameInfo.Features[bf.FeatureType]
+		if f and bf.Remove then improvements[#improvements + 1] = "clear " .. f.Type:gsub("^FEATURE_", ""):lower() end
+	end
+	local reveals = names(GameInfo.Resources{TechReveal = tech.Type}, "^RESOURCE_")
+	local function add(label, list)
+		local seen, uniq = {}, {}
+		for _, v in ipairs(list) do if not seen[v] then seen[v] = true uniq[#uniq + 1] = v end end
+		if #uniq > 0 then parts[#parts + 1] = label .. " " .. table.concat(uniq, ", ") end
+	end
+	add("units", units)
+	add("buildings", buildings)
+	add("improvements", improvements)
+	add("reveals", reveals)
+	return table.concat(parts, "; ")
 end
 
 -- Workers -------------------------------------------------------------------
