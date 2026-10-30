@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from . import diplomacy
+from . import diplomacy, lessons
 from .actions import Actions
 from .popups import close_popups
 from .prompt import SYSTEM
@@ -30,6 +30,7 @@ MODEL_OPTIONS = {"temperature": 0.3, "num_ctx": 16384}
 MAX_ACTIONS_PER_TURN = 15
 MAX_FAILURES_PER_TOOL = 3  # a tool failing this often in one turn is refused until next turn
 MAX_SILENT_REPLIES = 2  # text-only replies in a row before falling back to defaults
+LESSONS_EVERY = 10  # turns between reviews where the model updates lessons.md (0 = never)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 PLAN_FILE = PROJECT_DIR / "plan.txt"  # the model's strategy, kept across runs
@@ -45,13 +46,13 @@ HANDLED_BLOCKERS = {
 }
 
 
-def extract_text_tool_calls(content):
+def extract_text_tool_calls(content, tools=TOOLS):
     """Tool calls the model wrote as text instead of real calls.
 
     qwen sometimes puts {"name": ..., "arguments": {...}} JSON (often inside
     <tool_call> tags or ``` fences) in its message. Run those rather than ignore them.
     """
-    known = {t["function"]["name"] for t in TOOLS}
+    known = {t["function"]["name"] for t in tools}
     calls, decoder, i = [], json.JSONDecoder(), 0
     while (i := content.find("{", i)) != -1:
         try:
@@ -93,6 +94,9 @@ class Agent:
         self.changed_turn = {}  # "research" or city id -> turn we last changed it
         self.known_units = {}  # id -> (type, x, y) as of the last state we saw
         self.lost_units = {}   # id -> (type, x, y, turn lost), so stale ids get a clear answer
+        self.lessons = lessons.load()
+        self.lessons_every = LESSONS_EVERY
+        self.period = None  # lessons.Period: what happened since the last review
 
     def attach(self, tuner):
         """Use a (new) tuner connection; reinstalls the in-game actions."""
@@ -189,12 +193,50 @@ class Agent:
         note = "" if settlers else " You have no Settler right now; city ids are not unit ids."
         return f"Your units are: {units}.{note}"
 
+    def review(self, s, note):
+        """Let the model rewrite its lessons from what happened since the last review."""
+        if self.period is None or s["turn"] <= self.period.start["turn"]:
+            return
+        print(f"\n  reviewing turns {self.period.start['turn']}-{s['turn']} to update lessons.md...")
+        prompt = self.period.describe(s, self.plan, self.lessons)
+        messages = [{"role": "system", "content": lessons.REVIEW_SYSTEM}, {"role": "user", "content": prompt}]
+        new = None
+        try:
+            reply = chat(self.model, messages, tools=[lessons.SAVE_TOOL])
+            calls = reply.get("tool_calls") or extract_text_tool_calls(reply.get("content") or "",
+                                                                      tools=[lessons.SAVE_TOOL])
+            for call in calls:
+                if call["function"]["name"] == "save_lessons":
+                    new = (call["function"].get("arguments") or {}).get("lessons")
+        except (OSError, ValueError, KeyError) as e:
+            self.record(error=f"lessons review: {e!r}")
+        if isinstance(new, list) and new:
+            self.lessons = lessons.save(new, note)
+            print("  lessons now:\n" + "\n".join(f"    - {lesson}" for lesson in self.lessons))
+            self.record(turn=s["turn"], review=prompt, lessons=self.lessons)
+        else:
+            print("  (the model didn't return lessons; keeping the old ones)")
+        self.period = lessons.Period(s)
+
+    def review_at_end(self):
+        """Final review when the run stops, if enough turns have passed since the last one."""
+        if self.period is None:
+            return
+        try:
+            s = get_state(self.t)
+        except (TunerError, OSError):
+            return
+        if s["turn"] - self.period.start["turn"] >= 3:
+            self.review(s, f"end of run, turn {s['turn']}")
+
     def track_units(self, s):
         """Note which units disappeared since the last state; return them {id: (type, x, y)}."""
         current = {u["id"]: (u["type"], u["x"], u["y"]) for u in s["units"].values()}
         gone = {uid: info for uid, info in self.known_units.items() if uid not in current}
         for uid, info in gone.items():
             self.lost_units[uid] = (*info, s["turn"])
+            if self.period and info[0] != "UNIT_SETTLER":  # settlers are used up, not lost
+                self.period.lost.append(f"{info[0]} near ({info[1]},{info[2]}) around turn {s['turn']}")
         self.known_units = current
         return gone
 
@@ -347,6 +389,8 @@ class Agent:
                          "exist. Rewrite the plan with update_plan using your current units.")
         else:
             text += "\n\nYour plan: none yet - write one with update_plan"
+        if self.lessons:
+            text += "\n\n" + lessons.for_prompt(self.lessons)
         if self.human_message:
             text += ("\n\nMESSAGE FROM THE HUMAN PLAYER (follow it, and update your plan "
                      f"if it changes your strategy): {self.human_message}")
@@ -363,6 +407,10 @@ class Agent:
         if s["blocking"] not in HANDLED_BLOCKERS:
             self.wait_for_human(s["blocking"])
             s = get_state(self.t)
+        if self.period is None:
+            self.period = lessons.Period(s)
+        elif self.lessons_every and s["turn"] - self.period.start["turn"] >= self.lessons_every:
+            self.review(s, f"turn {s['turn']}")
         lost = self.track_units(s)
         text = self.build_prompt(s, lost)
         print(f"\n===== Turn {s['turn']} =====\n{text}\n")
@@ -383,6 +431,7 @@ class Agent:
             messages.append({**reply, "content": content[:500]})
             if not calls:
                 silent += 1
+                self.period.silent_replies += 1
                 actions.append("(no tool call)")
                 if silent >= MAX_SILENT_REPLIES:
                     print("  model keeps answering without calling tools; finishing the turn with defaults")
@@ -412,6 +461,7 @@ class Agent:
                     if result.startswith("error"):
                         failed.add(key)
                         failures_by_tool[name] = failures_by_tool.get(name, 0) + 1
+                        self.period.failure(name, result)
                         if "no unit with id" in result:
                             result = self.unknown_unit_message(args, s) or result + ". " + self.unit_roster(s)
                 if result.startswith("ok"):

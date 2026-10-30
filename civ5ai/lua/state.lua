@@ -43,7 +43,7 @@
 --                   NS   x, y, found value, distance to nearest city, that city, site info
 --                        (best spots for new cities around the empire)
 --   Other players   K    player id, MAJOR|MINOR, name, at war, can declare war, score, influence
---                   ME   our military might, techs, policies, branches finished, tourism
+--                   ME   our military might, techs, policies, branches finished, tourism, score
 --                   CV   rival civ: id, name, score, cities, pop, military might, era, techs,
 --                        policies, branches, tourism, religion, attitude to us, friends,
 --                        they denounced us, we denounced them, nearest dist, their city, our city
@@ -616,7 +616,7 @@ local function eraName(player)
 end
 
 -- ME: our own numbers, to compare against: military might, techs, policies, branches finished, tourism
-emit("ME", p:GetMilitaryMight(), techsKnown(p), p:GetNumPolicies(), p:GetNumPolicyBranchesFinished(), p:GetTourism())
+emit("ME", p:GetMilitaryMight(), techsKnown(p), p:GetNumPolicies(), p:GetNumPolicyBranchesFinished(), p:GetTourism(), p:GetScore())
 
 local WONDERS = {}
 for b in GameInfo.Buildings() do

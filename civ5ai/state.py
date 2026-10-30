@@ -79,7 +79,8 @@ def parse(lines):
                                      "ranged": _num(f[6]) if len(f) > 6 else None})
         elif tag == "ME":
             state["me"] = {"might": _num(f[0]), "techs": _num(f[1]), "policies": _num(f[2]),
-                           "branches": _num(f[3]), "tourism": _num(f[4])}
+                           "branches": _num(f[3]), "tourism": _num(f[4]),
+                           "score": _num(f[5]) if len(f) > 5 else None}
         elif tag == "CV":
             state["rivals"][int(f[0])] = {
                 "id": int(f[0]), "name": f[1], "score": _num(f[2]), "cities": _num(f[3]),

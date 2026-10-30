@@ -47,6 +47,18 @@ The model keeps its strategy in `plan.txt`, which carries over between runs.
 Delete it when you start a new game. Every turn's state, tool calls and
 results are logged to `logs/game-<time>.jsonl`.
 
+## Lessons
+
+The model can't learn in the training sense: its weights never change. Instead it keeps notes.
+Every 10 turns (`--lessons-every N`, `0` turns it off), and when you quit with `q`, the agent shows the
+model what happened in those turns: score, cities, population, techs and gold before and after, rivals'
+average score, units lost, which actions failed, and how often it answered without acting. The model then
+rewrites a list of at most 15 lessons in `lessons.md`, and that list goes into its prompt every turn, in
+this game and later ones. Lessons that use ideas from other Civ games (amenities, districts…) are dropped.
+
+`lessons.md` is plain Markdown: edit or delete lessons whenever you like, or write your own as `- ` lines.
+To seed it from past games without the game running: `py scripts/review_logs.py --logs 10`.
+
 ## How it works
 
 ```

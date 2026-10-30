@@ -11,7 +11,7 @@ def state(turn, *units):
 class UnitTrackingTest(unittest.TestCase):
     def setUp(self):
         self.agent = Agent.__new__(Agent)  # skip connecting to the game
-        self.agent.known_units, self.agent.lost_units = {}, {}
+        self.agent.known_units, self.agent.lost_units, self.agent.period = {}, {}, None
 
     def test_lost_units_are_reported_once_and_remembered(self):
         a = self.agent

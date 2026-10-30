@@ -6,7 +6,7 @@ import time
 import traceback
 import urllib.error
 
-from .agent import DEFAULT_MODEL, MODEL_OPTIONS, Agent
+from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS, Agent
 from .tuner import Tuner, TunerError
 
 # Problems talking to the game or to Ollama: worth reconnecting and retrying the turn.
@@ -46,6 +46,8 @@ def main():
     ap.add_argument("--ctx", type=int, default=MODEL_OPTIONS["num_ctx"],
                     help=f"model context size in tokens (default {MODEL_OPTIONS['num_ctx']}); "
                          "lower it if the model doesn't fit on the GPU next to the game")
+    ap.add_argument("--lessons-every", type=int, default=LESSONS_EVERY,
+                    help=f"turns between reviews that update lessons.md (default {LESSONS_EVERY}; 0 = off)")
     args = ap.parse_args()
     MODEL_OPTIONS["num_ctx"] = args.ctx
 
@@ -65,7 +67,10 @@ def main():
     tuner = connect()
     agent = Agent(tuner, args.model)
     agent.human_message = args.say
+    agent.lessons_every = args.lessons_every
     print(f"Logging to {agent.log_path}. Press Ctrl+C any time to pause and give the model direction.")
+    if agent.lessons:
+        print(f"Using {len(agent.lessons)} lessons from lessons.md.")
     played, failures = 0, 0
     try:
         while played < args.turns:
@@ -92,6 +97,8 @@ def main():
                     break
                 agent.human_message = msg
                 agent.record(human_message=msg)
+        if agent.lessons_every:
+            agent.review_at_end()  # a clean stop: learn from the last few turns too
     except KeyboardInterrupt:
         print("\n  stopped.")
         agent.record(stopped="Ctrl+C")

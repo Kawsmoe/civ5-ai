@@ -4,3 +4,6 @@ __pycache__/
 # per-game runtime files
 logs/
 plan.txt
+
+# the model's own lessons (commit it if you want to share them)
+lessons.md
