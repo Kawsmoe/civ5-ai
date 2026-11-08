@@ -97,6 +97,15 @@ TOOLS = [
     # Diplomacy, espionage, World Congress
     tool("respond_to_leader", "Answer a leader who is talking to you, using one of the numbered options shown.",
          option=_int()),
+    tool("propose_trade", "Offer a deal to another civilization (not a city-state). Pick items from the 'Trade' "
+         "line for that player in the state. Items: a resource type ('RESOURCE_WINE', 'RESOURCE_IRON 2'), "
+         "'GOLD 100' (one-off), 'GOLD_PER_TURN 3', 'OPEN_BORDERS', 'EMBASSY', 'RESEARCH_AGREEMENT', 'DEFENSIVE_PACT'. "
+         "Resources, gold per turn and agreements last the standard deal length. The answer comes back at once.",
+         player_id=_int("player id of the civilization"),
+         give={"type": "array", "items": {"type": "string"}, "description": "what you give (can be empty)", "optional": True},
+         get={"type": "array", "items": {"type": "string"}, "description": "what you want from them (can be empty)", "optional": True}),
+    tool("declare_friendship", "Ask another civilization for a Declaration of Friendship. They accept only if they "
+         "like you; friends trade more and rarely attack.", player_id=_int("player id of the civilization")),
     tool("declare_war", "Declare war on a civ or city-state.", player_id=_int()),
     tool("gift_gold", "Give gold to a city-state for influence (the state shows what a small gift buys).",
          player_id=_int("city-state player id"), size=_str(enum=["small", "medium", "large"])),
@@ -117,6 +126,7 @@ TOOLS = [
     tool("diplo_vote", "Cast your diplomatic victory vote for a player.", player_id=_int()),
 
     # Turn
-    tool("update_plan", "Write your strategy and short-term goals; shown back to you every turn.", plan=_str()),
+    tool("update_plan", "Write your plan as labelled lines (Target, Why, Now, Next, Diplomacy, Risks); "
+         "shown back to you every turn.", plan=_str()),
     tool("end_turn", "End your turn once research, production and all units are handled."),
 ]

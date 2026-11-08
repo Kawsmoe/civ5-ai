@@ -5,6 +5,8 @@
 --
 --   Empire          P    turn, civ, gold, gold/turn, science, culture, faith, happiness,
 --                        end-turn blocker, current research, research turns left
+--                   CIV  leader name, trait name, trait description (your civ's ability)
+--                   CIVU UNIT|BUILDING|IMPROVEMENT, unique type, what it replaces, its description
 --                   T    researchable tech, turns, what it unlocks
 --                   TP   tech our land needs, what for, path to it
 --                   L    culture stored, next policy cost, free policies, choice due
@@ -169,6 +171,32 @@ emit("P", Game.GetGameTurn(), p:GetCivilizationShortDescription(), p:GetGold(),
 	blockNames[block] or "NONE",
 	research >= 0 and GameInfo.Technologies[research].Type or "",
 	research >= 0 and p:GetResearchTurnsLeft(research, true) or "")
+
+-- who we are: the leader's trait and the civ's unique units, buildings and improvements
+pcall(function()
+	local civInfo = GameInfo.Civilizations[p:GetCivilizationType()]
+	local leader = GameInfo.Leaders[p:GetLeaderType()]
+	local function flat(s) return (s:gsub("%[NEWLINE%]", " "):gsub("[\t\r\n]", " ")) end
+	for lt in GameInfo.Leader_Traits{LeaderType = leader.Type} do
+		local tr = GameInfo.Traits[lt.TraitType]
+		if tr then emit("CIV", text(leader.Description), text(tr.ShortDescription), flat(text(tr.Description))) end
+	end
+	for o in GameInfo.Civilization_UnitClassOverrides{CivilizationType = civInfo.Type} do
+		local u = o.UnitType and GameInfo.Units[o.UnitType]
+		local cls = GameInfo.UnitClasses[o.UnitClassType]
+		local base = cls and cls.DefaultUnit and GameInfo.Units[cls.DefaultUnit]
+		if u then emit("CIVU", "UNIT", u.Type, base and base.Type or "", flat(text(u.Help))) end
+	end
+	for o in GameInfo.Civilization_BuildingClassOverrides{CivilizationType = civInfo.Type} do
+		local b = o.BuildingType and GameInfo.Buildings[o.BuildingType]
+		local cls = GameInfo.BuildingClasses[o.BuildingClassType]
+		local base = cls and cls.DefaultBuilding and GameInfo.Buildings[cls.DefaultBuilding]
+		if b then emit("CIVU", "BUILDING", b.Type, base and base.Type or "", flat(text(b.Help))) end
+	end
+	for imp in GameInfo.Improvements{CivilizationType = civInfo.Type} do
+		emit("CIVU", "IMPROVEMENT", imp.Type, "", flat(text(imp.Help or imp.Description)))
+	end
+end)
 
 for tech in GameInfo.Technologies() do
 	if p:CanResearch(tech.ID) and not team:IsHasTech(tech.ID) then
@@ -797,6 +825,43 @@ for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
 				if tc:IsHasBuilding(b.ID) then emit("CW", i, (b.Type:gsub("^BUILDING_", ""))) end
 			end
 		end
+		-- DT: id, you|them (who would give it), item as propose_trade takes it, how many they have
+		--     [, luxury|strategic] (what the game allows in a deal between us right now; uses the scratch deal, so
+		--     only while no leader screen has a deal open)
+		pcall(function()
+			if UI.GetLeaderHeadRootUp() or team:IsAtWar(other:GetTeam()) then return end
+			local deal = UI.GetScratchDeal()
+			deal:ClearItems()
+			deal:SetFromPlayer(iPlayer)
+			deal:SetToPlayer(i)
+			local dur = Game.GetDealDuration()
+			local T = TradeableItems
+			for _, side in ipairs({{iPlayer, i, "you"}, {i, iPlayer, "them"}}) do
+				local from, to, label = side[1], side[2], side[3]
+				local giver = Players[from]
+				for r in GameInfo.Resources() do
+					if r.ResourceUsage == 1 or r.ResourceUsage == 2 then
+						local n = giver:GetNumResourceAvailable(r.ID, false)
+						if n > 0 and deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_RESOURCES, r.ID, 1) then
+							emit("DT", i, label, r.Type, n, r.ResourceUsage == 2 and "luxury" or "strategic")
+						end
+					end
+				end
+				local gold = giver:GetGold()
+				if gold > 0 and deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_GOLD, 1) then
+					emit("DT", i, label, "GOLD", gold)
+				end
+				local gpt = giver:CalculateGoldRate()
+				if gpt > 0 and deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_GOLD_PER_TURN, 1, dur) then
+					emit("DT", i, label, "GOLD_PER_TURN", gpt)
+				end
+				for key, item in pairs({OPEN_BORDERS = T.TRADE_ITEM_OPEN_BORDERS, EMBASSY = T.TRADE_ITEM_ALLOW_EMBASSY,
+						RESEARCH_AGREEMENT = T.TRADE_ITEM_RESEARCH_AGREEMENT, DEFENSIVE_PACT = T.TRADE_ITEM_DEFENSIVE_PACT}) do
+					if item and deal:IsPossibleToTradeItem(from, to, item, dur) then emit("DT", i, label, key, "") end
+				end
+			end
+			deal:ClearItems()
+		end)
 	end
 end
 

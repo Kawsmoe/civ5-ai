@@ -312,6 +312,15 @@ class MainWindow(QMainWindow):
         col.addWidget(frame)
 
         frame, lay = card("Lessons")
+        self.all_lessons, self.plan_text = [], ""
+        self.lessons_filter = QComboBox(toolTip="Which lessons to show: the ones this game's plan uses, "
+                                                "all of them, or one tag")
+        self.lessons_filter.addItem("In use this game", "in_use")
+        self.lessons_filter.addItem("All", "all")
+        for tag in (lessons.GENERAL, *lessons.VICTORIES):
+            self.lessons_filter.addItem(tag.title(), tag)
+        self.lessons_filter.currentIndexChanged.connect(self.render_lessons)
+        lay.addWidget(self.lessons_filter)
         self.lessons_label = bullet_label("none yet")
         lay.addWidget(self.lessons_label)
         edit = QPushButton("Edit lessons…")
@@ -455,10 +464,37 @@ class MainWindow(QMainWindow):
             self.show_lessons(kept)
 
     def show_plan(self, plan):
-        set_bullets(self.plan, [plan] if plan else [], "none yet")
+        set_bullets(self.plan, [line.strip() for line in (plan or "").splitlines() if line.strip()], "none yet")
+        self.plan_text = plan or ""
+        if hasattr(self, "lessons_filter"):
+            self.render_lessons()
 
     def show_lessons(self, items):
-        set_bullets(self.lessons_label, items, "none yet")
+        self.all_lessons = list(items)
+        self.render_lessons()
+
+    def render_lessons(self):
+        """Fill the lessons card for the chosen filter, with a count per tag in the dropdown."""
+        tags = [lessons.split_tag(x)[0] for x in self.all_lessons]
+        victory = lessons.victory_of(self.plan_text)
+        for i in range(self.lessons_filter.count()):
+            key = self.lessons_filter.itemData(i)
+            if key == "in_use":
+                label = f"In use this game ({victory or 'no victory in plan yet'})"
+                n = len(lessons.relevant(self.all_lessons, victory))
+            elif key == "all":
+                label, n = "All", len(tags)
+            else:
+                label, n = key.title(), tags.count(key)
+            self.lessons_filter.setItemText(i, f"{label}: {n}")
+        key = self.lessons_filter.currentData()
+        if key == "in_use":
+            shown = lessons.relevant(self.all_lessons, victory)
+        elif key == "all":
+            shown = self.all_lessons
+        else:
+            shown = [x for x, tag in zip(self.all_lessons, tags) if tag == key]
+        set_bullets(self.lessons_label, shown, "none" if self.all_lessons else "none yet")
 
     def show_prompt(self):
         self.prompt_view.setPlainText(self.prompts.get(self.prompt_turn.currentData(), ""))

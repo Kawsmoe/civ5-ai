@@ -166,7 +166,7 @@ class Agent:
 
     def _do(self, name, args, s):
         if name == "update_plan":
-            self.plan = f"(written turn {s['turn']}) {args.get('plan', '').strip()}"
+            self.plan = f"(written turn {s['turn']})\n{args.get('plan', '').strip()}"
             PLAN_FILE.write_text(self.plan, encoding="utf-8")
             return "ok: plan saved"
         if name == "respond_to_leader":
@@ -453,7 +453,7 @@ class Agent:
                 f"{utype} {uid} near ({x},{y})" for uid, (utype, x, y) in lost.items())
         if self.plan:
             text += ("\n\nYour plan so far (check it against the state above; "
-                     f"rewrite it with update_plan if it no longer fits): {self.plan}")
+                     f"rewrite it with update_plan if it no longer fits):\n{self.plan}")
             # any unit-sized id in the plan that isn't a current unit or city (also
             # catches units lost before this run started)
             live = {str(i) for i in list(s["units"]) + list(s["cities"])}

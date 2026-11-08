@@ -43,6 +43,16 @@ class WindowTest(unittest.TestCase):
         self.assertIn("UNIT_BARBARIAN_WARRIOR", w.lists["threats"].text())
         self.assertIn("Target: science victory.", w.plan.text())
         self.assertIn("Turn 12", w.prompt_view.toPlainText())
+
+        w.on_event("lessons", "", {"lessons": ["[general] Shoot with cities.", "[science] Build libraries.",
+                                               "[domination] Build an army."]})
+        self.assertIn("libraries", w.lessons_label.text())
+        self.assertNotIn("army", w.lessons_label.text())  # in use: general + science
+        self.assertIn("science", w.lessons_filter.itemText(0))
+        w.lessons_filter.setCurrentIndex(w.lessons_filter.findData("domination"))
+        self.assertIn("army", w.lessons_label.text())
+        self.assertNotIn("cities", w.lessons_label.text())
+        self.assertEqual(w.lessons_filter.currentText(), "Domination: 1")
         w.close()
 
 

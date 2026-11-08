@@ -4,10 +4,12 @@ Each action is a Lua function in lua/actions.lua (installed into the game
 as the global table _AI) that checks legality and returns a string starting
 with "ok:" or "error:". That string goes back to the model as-is.
 """
+import re
 import time
 from pathlib import Path
 
 from .popups import close_named
+from .trade import Trader
 from .tuner import TunerError
 
 LUA = (Path(__file__).parent / "lua" / "actions.lua").read_text()
@@ -25,10 +27,20 @@ def _lua_arg(v):
     return f'"{s}"'
 
 
+def _as_list(v):
+    """Trade items as a list, also when the model sends one string ('RESOURCE_WINE, GOLD 50')."""
+    if v is None or v == "":
+        return []
+    if isinstance(v, str):
+        return [x.strip() for x in re.split(r"[;,]", v) if x.strip()]
+    return [str(x) for x in v if str(x).strip()]
+
+
 class Actions:
     def __init__(self, tuner):
         self.t = tuner
         self.t.run(LUA)
+        self.trader = Trader(tuner)
 
     def _call(self, fn, *args):
         lines = self.t.run(f"print(_AI.{fn}({', '.join(map(_lua_arg, args))}))")
@@ -177,6 +189,12 @@ class Actions:
 
     def gift_gold(self, player_id, size="small"):
         return self._call("gift_gold", int(player_id), str(size).lower())
+
+    def propose_trade(self, player_id, give=None, get=None, **_):
+        return self.trader.propose(int(player_id), _as_list(give), _as_list(get))
+
+    def declare_friendship(self, player_id, **_):
+        return self.trader.declare_friendship(int(player_id))
 
     def pledge_protection(self, player_id):
         return self._call("pledge_protection", int(player_id))

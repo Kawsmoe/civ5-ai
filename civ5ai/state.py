@@ -27,7 +27,7 @@ def parse(lines):
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
              "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": [],
              "unexplored": None, "tech_goals": [], "city_states": {}, "happy": None, "luxuries": [],
-             "victory": [], "total_capitals": None}
+             "victory": [], "total_capitals": None, "leader": "", "traits": [], "uniques": []}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -35,6 +35,12 @@ def parse(lines):
                     "faith", "happiness", "blocking", "research", "research_turns"]
             state.update({k: (v if k in ("civ", "blocking", "research") else _num(v))
                           for k, v in zip(keys, f)})
+        elif tag == "CIV":
+            state["leader"] = f[0]
+            state["traits"].append({"name": f[1], "text": f[2] if len(f) > 2 else ""})
+        elif tag == "CIVU":
+            state["uniques"].append({"kind": f[0], "type": f[1], "replaces": f[2],
+                                     "text": f[3] if len(f) > 3 else ""})
         elif tag == "T":
             state["techs"].append({"type": f[0], "turns": _num(f[1]), "unlocks": f[2] if len(f) > 2 else ""})
         elif tag == "TP":
@@ -93,11 +99,15 @@ def parse(lines):
                 "religion": f[11], "attitude": f[12], "friends": f[13] == "true",
                 "denounced_us": f[14] == "true", "we_denounced": f[15] == "true",
                 "dist": _num(f[16]), "their_city": f[17], "our_city": f[18],
-                "opinions": [], "wonders": []}
+                "opinions": [], "wonders": [], "can_give": [], "can_get": []}
         elif tag == "CO":
             state["rivals"][int(f[0])]["opinions"].append(_clean(f[1], 90))
         elif tag == "CW":
             state["rivals"][int(f[0])]["wonders"].append(f[1])
+        elif tag == "DT" and int(f[0]) in state["rivals"]:
+            side = "can_give" if f[1] == "you" else "can_get"
+            state["rivals"][int(f[0])][side].append({"item": f[2], "have": _num(f[3]) if len(f) > 3 else "",
+                                                     "class": f[4] if len(f) > 4 else ""})
         elif tag == "RW":
             state["rival_relations"].append({"a": int(f[0]), "b": int(f[1]), "kind": f[2]})
         elif tag == "CS":
@@ -299,6 +309,7 @@ def summarize(s):
         out.extend(f"    {b['type']}: {b['text']}" for b in options)
 
     # Other civs, espionage and one-off choices
+    out.extend(_civ_section(s))
     out.extend(_victory_section(s))
     out.extend(_rivals_section(s))
     out.extend(_city_states_section(s))
@@ -611,6 +622,20 @@ def _happiness_section(s):
     return out
 
 
+def _civ_section(s):
+    """Your leader's ability and your civ's unique units/buildings: what to pick a victory from."""
+    if not s["traits"] and not s["uniques"]:
+        return []
+    out = ["\nYour civilization" +(f" (led by {s['leader']})" if s["leader"] else "")
+           + " - pick the victory that uses these strengths:"]
+    out.extend(f"  Ability {t['name']}: {_clean(t['text'], 300)}" for t in s["traits"])
+    for u in s["uniques"]:
+        kind = u["kind"].lower()
+        replaces = f", replaces {u['replaces']}" if u["replaces"] else ""
+        out.append(f"  Unique {kind} {u['type']}{replaces}: {_clean(u['text'], 200)}")
+    return out
+
+
 def _victory_section(s):
     rows = s["victory"]
     me = next((r for r in rows if r["name"] == "you"), None)
@@ -758,10 +783,33 @@ def _rivals_section(s):
             out.append("    Why: " + "; ".join(r["opinions"][:6]))
         if r["wonders"]:
             out.append("    Wonders: " + ", ".join(r["wonders"]))
+        if r["can_give"] or r["can_get"]:
+            out.append(f"    Trade (propose_trade with player {r['id']}): you can give "
+                       + (", ".join(_trade_item(x, s, mine=True) for x in r["can_give"]) or "nothing")
+                       + "; they can give " + (", ".join(_trade_item(x, s) for x in r["can_get"]) or "nothing") + ".")
+        if not r["friends"] and not r["denounced_us"] and not r["we_denounced"] and r["id"] not in at_war:
+            out.append(f"    You can ask for a declaration of friendship (declare_friendship {r['id']}).")
     for rel in s["rival_relations"]:
         a, b = names.get(rel["a"], rel["a"]), names.get(rel["b"], rel["b"])
         out.append(f"  {a} and {b}: {rel['kind'].replace('_', ' ').lower()}")
     return out
+
+
+def _trade_item(x, s, mine=False):
+    """'RESOURCE_WINE (you have 2: spare copy)', 'GOLD (up to 120)', 'OPEN_BORDERS'."""
+    item, have = x["item"], x["have"]
+    if item in ("GOLD", "GOLD_PER_TURN"):
+        return f"{item} (up to {have})"
+    if not item.startswith("RESOURCE_"):
+        return item
+    if x["class"] != "luxury":
+        return f"{item} ({'you' if mine else 'they'} have {have})"
+    if mine:
+        note = "spare copy" if isinstance(have, int) and have > 1 else "your only copy: you'd lose its happiness"
+        return f"{item} (luxury, you have {have}: {note})"
+    have_it = {"RESOURCE_" + l["type"] for l in s["luxuries"] if l["available"] > 0}
+    return f"{item} (luxury" + (", you have it already: no extra happiness)" if item in have_it
+                                else ": new for you, +happiness)")
 
 
 def _damage_text(t, s):

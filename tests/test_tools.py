@@ -7,6 +7,8 @@ from civ5ai.actions import Actions
 from civ5ai.tools import TOOLS
 
 HANDLED_BY_AGENT = {"update_plan", "respond_to_leader"}
+# driven from Python across several leader screens (trade.py), not one _AI function
+HANDLED_IN_PYTHON = {"propose_trade", "declare_friendship"}
 LUA = (Path(__file__).resolve().parent.parent / "civ5ai" / "lua" / "actions.lua").read_text()
 
 
@@ -22,6 +24,8 @@ class ToolsTest(unittest.TestCase):
             if name in HANDLED_BY_AGENT:
                 continue
             self.assertTrue(hasattr(Actions, name), f"Actions.{name} missing")
+            if name in HANDLED_IN_PYTHON:
+                continue
             self.assertIn(name, lua_functions, f"_AI.{name} missing from actions.lua")
 
     def test_required_params_exist(self):

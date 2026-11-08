@@ -829,3 +829,59 @@ function _AI.pledge_protection(id)
 	Game.DoMinorPledgeProtection(iPlayer, id, true)
 	return "ok: pledged to protect " .. cs:GetCivilizationShortDescription()
 end
+
+-- Fill the scratch deal for a proposal to an AI (trade.py opens the trade screen first and
+-- presses Propose after). spec: "you|KEY|amount;them|KEY|amount" where KEY is GOLD,
+-- GOLD_PER_TURN, OPEN_BORDERS, EMBASSY, RESEARCH_AGREEMENT, DEFENSIVE_PACT or a RESOURCE_ type.
+function _AI.build_deal(them, spec)
+	local us = Game.GetActivePlayer()
+	local other = Players[them]
+	if not other then return "error: no player " .. tostring(them) end
+	local who = other:GetCivilizationShortDescription()
+	local deal = UI.GetScratchDeal()
+	local T = TradeableItems
+	local dur = Game.GetDealDuration()
+	deal:ClearItems()
+	deal:SetFromPlayer(us)
+	deal:SetToPlayer(them)
+	for part in spec:gmatch("[^;]+") do
+		local side, key, amount = part:match("^(%a+)|([%w_]+)|(%d*)$")
+		if not side then deal:ClearItems() return "error: bad deal item " .. part end
+		amount = tonumber(amount)
+		local from = side == "you" and us or them
+		local to = from == us and them or us
+		local giver = from == us and "you" or who
+		local ok = false
+		if key == "GOLD" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_GOLD, amount)
+			if ok then deal:AddGoldTrade(from, amount) end
+		elseif key == "GOLD_PER_TURN" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_GOLD_PER_TURN, amount, dur)
+			if ok then deal:AddGoldPerTurnTrade(from, amount, dur) end
+		elseif key == "OPEN_BORDERS" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_OPEN_BORDERS, dur)
+			if ok then deal:AddOpenBorders(from, dur) end
+		elseif key == "EMBASSY" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_ALLOW_EMBASSY)
+			if ok then deal:AddAllowEmbassy(from) end
+		elseif key == "RESEARCH_AGREEMENT" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_RESEARCH_AGREEMENT, dur)
+			if ok then deal:AddResearchAgreement(from, dur) end
+		elseif key == "DEFENSIVE_PACT" then
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_DEFENSIVE_PACT, dur)
+			if ok then deal:AddDefensivePact(from, dur) end
+		else
+			local r = GameInfo.Resources[key]
+			if not r then deal:ClearItems() return "error: unknown trade item " .. key end
+			amount = amount or 1
+			ok = deal:IsPossibleToTradeItem(from, to, T.TRADE_ITEM_RESOURCES, r.ID, amount)
+			if ok then deal:AddResourceTrade(from, r.ID, amount, dur) end
+		end
+		if not ok then
+			deal:ClearItems()
+			return "error: the game doesn't allow " .. giver .. " to give " .. key .. (amount and (" " .. amount) or "")
+				.. " in a deal with " .. who .. " right now (see the Trade line for " .. who .. " in the state)"
+		end
+	end
+	return "ok: " .. deal:GetNumItems() .. " items in the deal"
+end

@@ -8,6 +8,9 @@ T = "\t"
 # A small but complete snapshot, in the record format lua/state.lua prints.
 SNAPSHOT = [
     T.join(["P", "12", "Brazil", "40", "3", "6", "2", "1", "9", "UNITS", "TECH_POTTERY", "4"]),
+    T.join(["CIV", "Pedro II", "Carnival", "Tourism output is +100% during their Golden Ages. [NEWLINE]Earn Great Artists faster."]),
+    T.join(["CIVU", "UNIT", "UNIT_BRAZILIAN_PRACINHA", "UNIT_INFANTRY", "Earns points toward a Golden Age."]),
+    T.join(["CIVU", "IMPROVEMENT", "IMPROVEMENT_BRAZILWOOD_CAMP", "", "+2 [ICON_GOLD] Gold in jungle."]),
     T.join(["T", "TECH_ARCHERY", "7", "units ARCHER"]),
     T.join(["TP", "TECH_CALENDAR", "plantation for WINE", "TECH_POTTERY (3t) -> TECH_CALENDAR (8t), 11 turns"]),
     T.join(["T", "TECH_MINING", "5"]),
@@ -90,6 +93,13 @@ class ParseTest(unittest.TestCase):
 class SummarizeTest(unittest.TestCase):
     def setUp(self):
         self.text = summarize(parse(SNAPSHOT))
+
+    def test_civilization_strengths(self):
+        for expected in ["Your civilization (led by Pedro II) - pick the victory that uses these strengths:",
+                         "Ability Carnival: Tourism output is +100% during their Golden Ages. Earn Great Artists faster.",
+                         "Unique unit UNIT_BRAZILIAN_PRACINHA, replaces UNIT_INFANTRY: Earns points toward a Golden Age.",
+                         "Unique improvement IMPROVEMENT_BRAZILWOOD_CAMP: +2 Gold in jungle."]:
+            self.assertIn(expected, self.text)
 
     def test_sections(self):
         for expected in ["Turn 12 - you are Brazil.", "Researching TECH_POTTERY (4 turns left).", "  TECH_ARCHERY (7t): units ARCHER",
