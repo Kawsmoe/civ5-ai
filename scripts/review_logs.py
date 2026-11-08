@@ -52,7 +52,9 @@ def main():
     if not paths:
         sys.exit("no logs found in " + str(LOG_DIR))
     period, turns, first, last, plan = summarize_logs(paths)
-    current = lessons.load()
+    everything = lessons.load()
+    victory = lessons.victory_of(plan)
+    current = lessons.relevant(everything, victory)
     prompt = "\n".join([
         f"These are {len(paths)} recent games ({len(turns)} turns played in total).",
         "Start of the earliest game:", *("  " + l for l in first),
@@ -62,19 +64,15 @@ def main():
         "Failed tool calls (interface mistakes, mostly fixed since): "
         + ", ".join(f"{tool} x{n}" for tool, n in period.failures.most_common(6)),
         f"Your last plan: {plan or 'none'}",
-        "Current lessons:" if current else "Current lessons: none yet.",
-        *(f"  {i}. {x}" for i, x in enumerate(current, 1)),
-        f"\nUpdate the lessons (at most {lessons.MAX_LESSONS}) and call save_lessons with the full list.",
+        lessons.review_footer(current, victory),
     ])
     print(prompt, "\n\nAsking", args.model, "...")
     reply = chat(args.model, [{"role": "system", "content": lessons.REVIEW_SYSTEM},
                               {"role": "user", "content": prompt}], tools=[lessons.SAVE_TOOL])
-    calls = reply.get("tool_calls") or extract_text_tool_calls(reply.get("content") or "", tools=[lessons.SAVE_TOOL])
-    new = next((c["function"]["arguments"].get("lessons") for c in calls
-                if c["function"]["name"] == "save_lessons"), None)
+    new = lessons.from_reply(reply, extract_text_tool_calls)
     if not new:
         sys.exit("the model didn't return lessons:\n" + (reply.get("content") or ""))
-    saved = lessons.save(new, f"from {len(paths)} logs")
+    saved = lessons.save(lessons.merge(everything, new, victory), f"from {len(paths)} logs")
     print("\nSaved to", lessons.LESSONS_FILE)
     print("\n".join(f"- {x}" for x in saved))
 

@@ -94,7 +94,9 @@ class LessonsDialog(QDialog):
         self.setWindowTitle("Edit lessons")
         self.resize(560, 380)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("One lesson per line. These are shown to the model every turn."))
+        layout.addWidget(QLabel("One lesson per line, starting with [general] or a victory: [domination], [science], "
+                                "[culture], [diplomatic].\nEach turn the model sees the general ones and those for "
+                                "the victory its plan names. Untagged lines count as general."))
         self.edit = QPlainTextEdit("\n".join(current))
         layout.addWidget(self.edit)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)

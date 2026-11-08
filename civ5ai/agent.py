@@ -249,16 +249,23 @@ class Agent:
         messages = [{"role": "system", "content": lessons.REVIEW_SYSTEM}, {"role": "user", "content": prompt}]
         new = None
         try:
-            reply = chat(self.model, messages, tools=[lessons.SAVE_TOOL])
-            calls = reply.get("tool_calls") or extract_text_tool_calls(reply.get("content") or "",
-                                                                      tools=[lessons.SAVE_TOOL])
-            for call in calls:
-                if call["function"]["name"] == "save_lessons":
-                    new = (call["function"].get("arguments") or {}).get("lessons")
+            for attempt in range(2):
+                started = time.monotonic()
+                reply = chat(self.model, messages, tools=[lessons.SAVE_TOOL])
+                new = lessons.from_reply(reply, extract_text_tool_calls)
+                if new:
+                    break
+                # log what came back so a failed review can be diagnosed, then ask once more
+                self.record(turn=s["turn"], review_failed=attempt + 1, seconds=round(time.monotonic() - started),
+                            content=(reply.get("content") or "")[:3000],
+                            thinking_chars=len(reply.get("thinking") or ""))
+                messages += [{"role": "assistant", "content": reply.get("content") or ""},
+                             {"role": "user", "content": "You didn't call save_lessons. Call it now with the "
+                                                         "complete list of tagged lessons; no other text."}]
         except (OSError, ValueError, KeyError) as e:
             self.record(error=f"lessons review: {e!r}")
-        if isinstance(new, list) and new:
-            self.lessons = lessons.save(new, note)
+        if new:
+            self.lessons = lessons.save(lessons.merge(self.lessons, new, lessons.victory_of(self.plan)), note)
             self.event("lessons", "lessons now:\n" + "\n".join(f"    - {lesson}" for lesson in self.lessons),
                        lessons=self.lessons)
             self.record(turn=s["turn"], review=prompt, lessons=self.lessons)
@@ -457,7 +464,9 @@ class Agent:
         else:
             text += "\n\nYour plan: none yet - write one with update_plan"
         if self.lessons:
-            text += "\n\n" + lessons.for_prompt(self.lessons)
+            shown = lessons.for_prompt(self.lessons, lessons.victory_of(self.plan))
+            if shown:
+                text += "\n\n" + shown
         if self.human_message:
             text += ("\n\nMESSAGE FROM THE HUMAN PLAYER (follow it, and update your plan "
                      f"if it changes your strategy): {self.human_message}")
