@@ -58,7 +58,8 @@ TOOLS = [
     tool("attack", "Attack the enemy unit or city on tile (x,y) with a unit. Melee units must be adjacent; "
          "ranged units must have it in range.", unit_id=_unit(), x=_int(), y=_int()),
     tool("unit_mission", "Use a unit's special action listed in the state, e.g. MISSION_SPREAD_RELIGION, "
-         "MISSION_FOUND_RELIGION, MISSION_DISCOVER, MISSION_HURRY, MISSION_GOLDEN_AGE.",
+         "MISSION_FOUND_RELIGION, MISSION_DISCOVER, MISSION_HURRY, MISSION_GOLDEN_AGE, or MISSION_HEAL "
+         "(a hurt unit rests until fully healed).",
          unit_id=_unit(), mission=_str()),
     tool("trade_route", "Send a Caravan or Cargo Ship on a trade route to one of its listed destinations.",
          unit_id=_unit(), x=_int(), y=_int()),

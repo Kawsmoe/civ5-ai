@@ -29,6 +29,7 @@
 --                   UX   id, strength, ranged strength, xp, xp needed, promotion ready,
 --                        destination "x,y" of an earlier move order ("" if none), activity
 --                        (FORTIFIED, SLEEP, MISSION, AWAKE...)
+--                   UH   hurt unit id, where it stands (CITY, OWN, NEUTRAL, ENEMY), nearest own city, distance
 --                   UP   unit id, promotion it can take now
 --                   UM   unit id, special mission it can do here now
 --                   NB   unit id, x, y, terrain (adjacent tiles it can step onto now)
@@ -605,6 +606,23 @@ for u in p:Units() do
 	local activity = (u:GetFortifyTurns() > 0) and "FORTIFIED" or ACTIVITY_NAMES[u:GetActivityType()] or ""
 	emit("UX", uid, u:GetBaseCombatStrength(), u:GetBaseRangedCombatStrength(),
 		u:GetExperience(), u:ExperienceNeeded(), ready, dest, activity)
+	-- UH: hurt unit: where it stands (CITY, OWN, NEUTRAL, ENEMY), nearest own city, its distance
+	if u:GetDamage() > 0 then
+		local plot = Map.GetPlot(x, y)
+		local owner = plot:GetOwner()
+		local where = "NEUTRAL"
+		if owner == iPlayer then
+			where = plot:IsCity() and "CITY" or "OWN"
+		elseif owner >= 0 and team:IsAtWar(Players[owner]:GetTeam()) then
+			where = "ENEMY"
+		end
+		local nearD, nearName = 999, ""
+		for c in p:Cities() do
+			local d = Map.PlotDistance(x, y, c:GetX(), c:GetY())
+			if d < nearD then nearD, nearName = d, c:GetName() end
+		end
+		emit("UH", uid, where, nearName, nearD < 999 and nearD or "")
+	end
 	if ready then
 		for promo in GameInfo.UnitPromotions() do
 			if u:CanPromote(promo.ID, -1) then emit("UP", uid, promo.Type) end

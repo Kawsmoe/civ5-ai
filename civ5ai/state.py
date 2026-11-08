@@ -163,6 +163,8 @@ def parse(lines):
                                               "promotion_ready": f[5] == "true",
                                               "destination": f[6] if len(f) > 6 else "",
                                               "activity_name": f[7] if len(f) > 7 else ""})
+        elif tag == "UH":
+            state["units"][int(f[0])]["heal"] = {"where": f[1], "city": f[2], "dist": _num(f[3])}
         elif tag == "UP":
             state["units"][int(f[0])]["promotions"].append(f[1])
         elif tag == "UM":
@@ -404,11 +406,16 @@ def summarize(s):
         if u["enemies_near"]:
             danger = f" - {u['enemies_near']} enemy unit(s) within 2 tiles"
             if u["hp"] is not None and u["hp"] < 50:
-                danger += ", BADLY HURT: consider pulling back to heal"
+                danger += ", BADLY HURT: pull back to heal"
         out.append(f"  unit {u['id']} {u['type']} at ({u['x']},{u['y']}) "
                    f"moves {u['moves']}/{u['max_moves']} hp {u['hp']}/100{strength}{flag}{danger}")
+        heal = _heal_line(u)
+        if heal:
+            out.append("    " + heal)
         if u["promotions"]:
-            out.append("    PROMOTION READY: " + ", ".join(u["promotions"]))
+            out.append("    PROMOTION READY: " + ", ".join(
+                p + (" (heals 50 hp at once instead of a lasting bonus)" if p == INSTA_HEAL else "")
+                for p in u["promotions"]))
         if u.get("great_person"):
             out.extend("    " + line for line in _great_person_lines(u))
         elif u["missions"]:
@@ -793,6 +800,28 @@ def _rivals_section(s):
         a, b = names.get(rel["a"], rel["a"]), names.get(rel["b"], rel["b"])
         out.append(f"  {a} and {b}: {rel['kind'].replace('_', ' ').lower()}")
     return out
+
+
+INSTA_HEAL = "PROMOTION_INSTA_HEAL"
+HURT = 60  # below this a combat unit gets healing advice
+HEAL_RATE = {"CITY": 25, "OWN": 20, "NEUTRAL": 10, "ENEMY": 10}
+
+
+def _heal_line(u):
+    """Healing advice for a hurt combat unit: rate where it stands, and the better place nearby."""
+    h = u.get("heal")
+    if not h or not u["combat"] or u["hp"] is None or u["hp"] >= HURT:
+        return ""
+    rate = HEAL_RATE.get(h["where"], 10)
+    where = {"CITY": "in your city", "OWN": "in your land", "NEUTRAL": "outside your land",
+             "ENEMY": "in enemy land"}.get(h["where"], "here")
+    text = (f"HURT ({u['hp']} hp): heals ~{rate}/turn {where} if it doesn't move or attack "
+            "(unit_mission MISSION_HEAL, fortify or skip)")
+    if h["where"] != "CITY" and h["city"] and isinstance(h["dist"], int):
+        text += f"; your city {h['city']} is {h['dist']} tiles away (25/turn there)"
+    if INSTA_HEAL in u["promotions"]:
+        text += f"; or promote {INSTA_HEAL} to heal 50 hp now"
+    return text + "."
 
 
 def _trade_item(x, s, mine=False):

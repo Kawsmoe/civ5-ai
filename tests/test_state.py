@@ -187,5 +187,36 @@ class GreatPeopleTest(unittest.TestCase):
             self.assertIn(expected, text)
 
 
+class HealingTest(unittest.TestCase):
+    def unit_lines(self, hp, where, promos=()):
+        recs = []
+        for r in SNAPSHOT:
+            if r.startswith("U\t16385\t"):
+                recs.append(T.join(["U", "16385", "UNIT_WARRIOR", "13", "23", "2", "2", str(hp), "0", "false", "true"]))
+                recs.append(T.join(["UH", "16385", where, "Rio de Janeiro", "3"]))
+                recs.extend(T.join(["UP", "16385", p]) for p in promos)
+            else:
+                recs.append(r)
+        text = summarize(parse(recs))
+        return [l for l in text.splitlines() if "16385" in l or "HURT" in l or "PROMOTION READY" in l]
+
+    def test_hurt_unit_gets_heal_advice_without_enemies_near(self):
+        lines = "\n".join(self.unit_lines(40, "NEUTRAL"))
+        self.assertIn("HURT (40 hp): heals ~10/turn outside your land", lines)
+        self.assertIn("MISSION_HEAL", lines)
+        self.assertIn("your city Rio de Janeiro is 3 tiles away (25/turn there)", lines)
+
+    def test_lightly_hurt_or_in_city_says_less(self):
+        self.assertNotIn("HURT", "\n".join(self.unit_lines(80, "NEUTRAL")))
+        lines = "\n".join(self.unit_lines(30, "CITY"))
+        self.assertIn("heals ~25/turn in your city", lines)
+        self.assertNotIn("tiles away", lines)
+
+    def test_insta_heal_promotion_is_explained(self):
+        lines = "\n".join(self.unit_lines(30, "ENEMY", promos=["PROMOTION_INSTA_HEAL", "PROMOTION_SHOCK_1"]))
+        self.assertIn("PROMOTION_INSTA_HEAL (heals 50 hp at once instead of a lasting bonus)", lines)
+        self.assertIn("or promote PROMOTION_INSTA_HEAL to heal 50 hp now", lines)
+
+
 if __name__ == "__main__":
     unittest.main()

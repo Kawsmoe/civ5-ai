@@ -440,7 +440,11 @@ class Agent:
                 done.append(self.a.set_production(c["id"], min(options, key=lambda b: b["turns"])["type"]))
         for u in s["units"].values():
             if needs_orders(u):
-                r = self.a.fortify(u["id"])
+                # hurt: heal until full (the unit wakes up by itself), else fortify, else skip
+                r = (self.a.unit_mission(u["id"], "MISSION_HEAL")
+                     if "MISSION_HEAL" in u["missions"] and (u["hp"] or 100) < 100 else "error")
+                if not r.startswith("ok"):
+                    r = self.a.fortify(u["id"])
                 done.append(r if r.startswith("ok") else self.a.skip(u["id"]))
         return done
 
