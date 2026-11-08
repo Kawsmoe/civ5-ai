@@ -30,9 +30,12 @@
 --                   UP   unit id, promotion it can take now
 --                   UM   unit id, special mission it can do here now
 --                   NB   unit id, x, y, terrain (adjacent tiles it can step onto now)
---                   S    unit id, x, y, found value, distance, site info (settle sites near a settler)
+--                   S    unit id, x, y, found value, distance, site info, turns until a city could be
+--                        founded there, nearest own city, its distance, risks (settle sites near a settler)
 --                   UB   unit id, build type, turns (what an idle worker can build where it stands)
 --                   WT   unit id, x, y, resource, build type, distance (unimproved resources it can improve)
+--                   GPU  unit id, type (Great Person); GPB its improvement, x, y, distance;
+--                   GPT  merchant's nearest city-state city, x, y, distance
 --                   TR   unit id, x, y, city, connection type, gold, science, food, production
 --   Map             E    x, y, owner, unit type, hp, strength, ranged strength (hostile units near us)
 --                   RT   UNIT|MELEE|NEAR|CITY, attacker id, target x, target y, forecast,
@@ -51,6 +54,13 @@
 --                   CW   rival id, world wonder built
 --                   RW   player a, player b, AT_WAR|FRIENDS|DENOUNCED
 --                   ND   unit id, visible enemies within 2 tiles
+--                   CS   city-state id, trait, status, influence, ally, protected, can pledge,
+--                        influence from a small gold gift, its cost
+--                   HP   happiness: excess, total, unhappiness, then each source (see the code)
+--                   LX   luxury, copies available, copies produced
+--                   VC   victory race row: player, name, techs, Apollo, spaceship parts, civs influenced,
+--                        civs needed, original capitals held, city-state allies, delegates
+--                   VT   original capitals in the game
 --                   SPY  spy id, name, rank, state, city owner id, city id
 --                   SC   city owner id, city id, city name, owner name, potential
 --   Choices due     ST   player id, tech we can steal from them
@@ -350,25 +360,113 @@ if TradeConnectionTypes then
 	for k, v in pairs(TradeConnectionTypes) do connNames[v] = tostring(k):gsub("^TRADE_CONNECTION_", "") end
 end
 
+-- Turns for unit u to reach every tile within radius R. Unit:GeneratePath isn't
+-- implemented in this game build, so this is a small Dijkstra over the hex grid.
+-- Move costs follow the basic rules: 1 move, 2 on rough ground (hills, forest, jungle,
+-- marsh), crossing a river ends the move, roads on both tiles cost a third.
+-- Don't use plot:MovementCost here: its Lua binding passes the unit and plot through
+-- lua_tointeger (null pointers) and crashes the game.
+-- Returns {["x:y"] = {turns, movesLeftOnArrival}}; turns 0 = arrives this turn.
+local function travelTurns(u, R)
+	local maxMoves = u:MaxMoves()
+	local x0, y0 = u:GetX(), u:GetY()
+	local startMoves = u:MovesLeft()
+	local best = {}
+	local key0 = x0 .. ":" .. y0
+	best[key0] = startMoves > 0 and {0, startMoves} or {1, maxMoves}
+	local open = {key0}
+	local plots = {[key0] = u:GetPlot()}
+	local function better(a, b) return a[1] < b[1] or (a[1] == b[1] and a[2] > b[2]) end
+	while #open > 0 do
+		-- take the open tile reached soonest (few hundred tiles: a linear scan is fine)
+		local bi = 1
+		for i = 2, #open do if better(best[open[i]], best[open[bi]]) then bi = i end end
+		local key = table.remove(open, bi)
+		local from, state = plots[key], best[key]
+		for dir = 0, 5 do
+			local to = Map.PlotDirection(from:GetX(), from:GetY(), dir)
+			if to and to:IsRevealed(team:GetID(), false) and not to:IsWater() and not to:IsMountain()
+				and not to:IsImpassable() and Map.PlotDistance(x0, y0, to:GetX(), to:GetY()) <= R then
+				local turns, moves = state[1], state[2]
+				if moves <= 0 then turns, moves = turns + 1, maxMoves end
+				local cost = to:IsRoughGround() and 2 * DENOM or DENOM
+				if from:GetRouteType() >= 0 and to:GetRouteType() >= 0 then
+					cost = math.ceil(DENOM / 3)
+				elseif from:IsRiverCrossingToPlot(to) then
+					cost = maxMoves  -- crossing a river without a road ends the move
+				end
+				-- entering a tile with too few moves left is allowed; it just ends the turn
+				local arrival = {turns, math.max(0, moves - cost)}
+				local tk = to:GetX() .. ":" .. to:GetY()
+				if best[tk] == nil or better(arrival, best[tk]) then
+					if best[tk] == nil then open[#open + 1] = tk end
+					best[tk], plots[tk] = arrival, to
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- what could go wrong settling at plot: camps and hostile units within 4, foreign borders within 3
+local CAMP = GameInfo.Improvements.IMPROVEMENT_BARBARIAN_CAMP
+local function siteRisk(plot)
+	local risks, borders, hostile = {}, {}, 0
+	for _, near in ipairs(plotsWithin(plot:GetX(), plot:GetY(), 4)) do
+		local d = Map.PlotDistance(plot:GetX(), plot:GetY(), near:GetX(), near:GetY())
+		if near:IsRevealed(team:GetID(), false) then
+			if CAMP and near:GetImprovementType() == CAMP.ID then risks[#risks + 1] = "barbarian camp " .. d .. " tiles away" end
+			local owner = near:GetOwner()
+			if d <= 3 and owner >= 0 and owner ~= iPlayer then
+				local who = Players[owner]
+				borders[who:IsMinorCiv() and ("city-state " .. who:GetCivilizationShortDescription())
+					or (who:GetCivilizationShortDescription() .. " border")] = true
+			end
+		end
+		if near:IsVisible(team:GetID(), false) then
+			for i = 0, near:GetNumUnits() - 1 do
+				local eu = near:GetUnit(i)
+				local owner = Players[eu:GetOwner()]
+				if eu:IsCombatUnit() and (owner:IsBarbarian() or team:IsAtWar(owner:GetTeam())) then hostile = hostile + 1 end
+			end
+		end
+	end
+	if hostile > 0 then risks[#risks + 1] = hostile .. " hostile unit(s) within 4 tiles" end
+	for b in pairs(borders) do risks[#risks + 1] = "near " .. b end
+	return table.concat(risks, "; ")
+end
+
+-- S: unit id, x, y, found value, distance, site info, turns until the city could be founded,
+--    nearest own city, its distance, risks
 local function settleSites(u, x, y)
 	local sites = {}
 	local R = 8
+	local reach = travelTurns(u, R)
 	for dx = -R, R do
 		for dy = -R, R do
 			local plot = Map.GetPlot(x + dx, y + dy)
 			if plot and plot:IsRevealed(team:GetID(), false) then
 				local d = Map.PlotDistance(x, y, plot:GetX(), plot:GetY())
-				if d <= R and p:CanFound(plot:GetX(), plot:GetY()) then
+				local r = reach[plot:GetX() .. ":" .. plot:GetY()]
+				if d <= R and r and p:CanFound(plot:GetX(), plot:GetY()) then
 					local v = plot:GetFoundValue(iPlayer)
-					if v > 0 then sites[#sites + 1] = {plot:GetX(), plot:GetY(), v, d} end
+					-- founding needs moves left on arrival, otherwise it waits a turn
+					local foundIn = r[1] + (r[2] > 0 and 0 or 1)
+					if v > 0 then sites[#sites + 1] = {plot, v, d, foundIn} end
 				end
 			end
 		end
 	end
-	table.sort(sites, function(a, b) return a[3] > b[3] end)
+	table.sort(sites, function(a, b) return a[2] > b[2] end)
 	for i = 1, math.min(5, #sites) do
-		local sx, sy = sites[i][1], sites[i][2]
-		emit("S", u:GetID(), sx, sy, sites[i][3], sites[i][4], siteInfo(Map.GetPlot(sx, sy)))
+		local plot = sites[i][1]
+		local nearName, nearD = "", ""
+		for c in p:Cities() do
+			local cd = Map.PlotDistance(c:GetX(), c:GetY(), plot:GetX(), plot:GetY())
+			if nearD == "" or cd < nearD then nearName, nearD = c:GetName(), cd end
+		end
+		emit("S", u:GetID(), plot:GetX(), plot:GetY(), sites[i][2], sites[i][3], siteInfo(plot),
+			sites[i][4], nearName, nearD, siteRisk(plot))
 	end
 end
 
@@ -425,6 +523,44 @@ local function workerOptions(u)
 	end
 end
 
+-- GPU: unit id, type (a Great Person)
+-- GPB: unit id, its special improvement, x, y, distance (nearest tile in our land where it can build it)
+-- GPT: unit id, city-state city, x, y, distance (merchants: nearest place for a trade mission)
+local function greatPersonOptions(u)
+	local info = GameInfo.Units[u:GetUnitType()]
+	if info.Special ~= "SPECIALUNIT_PEOPLE" then return end
+	local uid = u:GetID()
+	emit("GPU", uid, info.Type)
+	for row in GameInfo.Unit_Builds{UnitType = info.Type} do
+		local b = GameInfo.Builds[row.BuildType]
+		if b and b.ImprovementType then
+			local best, bestD
+			for c in p:Cities() do
+				for _, plot in ipairs(plotsWithin(c:GetX(), c:GetY(), 3)) do
+					if plot:GetOwner() == iPlayer and not plot:IsCity() and u:CanBuild(plot, b.ID) then
+						local d = Map.PlotDistance(u:GetX(), u:GetY(), plot:GetX(), plot:GetY())
+						if best == nil or d < bestD then best, bestD = plot, d end
+					end
+				end
+			end
+			if best then emit("GPB", uid, b.Type, best:GetX(), best:GetY(), bestD) end
+		end
+	end
+	if info.Type:find("MERCHANT") then
+		local best, bestD
+		for i = GameDefines.MAX_MAJOR_CIVS, GameDefines.MAX_CIV_PLAYERS - 1 do
+			local cs = Players[i]
+			if cs and cs:IsAlive() and cs:IsMinorCiv() and team:IsHasMet(cs:GetTeam()) and not team:IsAtWar(cs:GetTeam()) then
+				for c in cs:Cities() do
+					local d = Map.PlotDistance(u:GetX(), u:GetY(), c:GetX(), c:GetY())
+					if best == nil or d < bestD then best, bestD = c, d end
+				end
+			end
+		end
+		if best then emit("GPT", uid, best:GetName(), best:GetX(), best:GetY(), bestD) end
+	end
+end
+
 for u in p:Units() do
 	local uid, x, y = u:GetID(), u:GetX(), u:GetY()
 	local hasMoves = u:MovesLeft() > 0
@@ -461,6 +597,7 @@ for u in p:Units() do
 		and u:GetActivityType() == ActivityTypes.ACTIVITY_AWAKE then
 		workerOptions(u)
 	end
+	if hasMoves then greatPersonOptions(u) end
 	if u:IsFound() then settleSites(u, x, y) end
 	if GameInfo.Units[u:GetUnitType()].Trade and hasMoves then tradeRoutes(u) end
 	scanEnemies(x, y, 3)
@@ -673,6 +810,93 @@ for ai = 1, #majors do
 		end
 	end
 end
+
+-- City-states, happiness, victory race ------------------------------------------
+
+local TRAITS = {}
+for k, v in pairs(MinorCivTraitTypes or {}) do TRAITS[v] = (tostring(k):gsub("^MINOR_CIV_TRAIT_", ""):lower()) end
+local function nameOf(id)
+	if id == nil or id < 0 then return "" end
+	if id == iPlayer then return "you" end
+	return Players[id]:GetCivilizationShortDescription()
+end
+
+-- CS: id, trait, status (ALLY|FRIENDS|NEUTRAL|WAR), influence, ally name, we protect it,
+--     we could pledge to protect it, influence from a small gold gift, small gift cost
+local smallGift = GameDefines.MINOR_GOLD_GIFT_SMALL or 250
+for i = GameDefines.MAX_MAJOR_CIVS, GameDefines.MAX_CIV_PLAYERS - 1 do
+	local cs = Players[i]
+	if cs and cs:IsAlive() and cs:IsMinorCiv() and team:IsHasMet(cs:GetTeam()) then
+		local status = team:IsAtWar(cs:GetTeam()) and "WAR" or cs:IsAllies(iPlayer) and "ALLY"
+			or cs:IsFriends(iPlayer) and "FRIENDS" or "NEUTRAL"
+		emit("CS", i, TRAITS[cs:GetMinorCivTrait()] or "?", status, cs:GetMinorCivFriendshipWithMajor(iPlayer),
+			nameOf(cs:GetAlly()), cs:IsProtectedByMajor(iPlayer), cs:CanMajorProtect(iPlayer),
+			cs:GetFriendshipFromGoldGift(iPlayer, smallGift), smallGift)
+	end
+end
+
+-- HP: excess happiness, total happiness, total unhappiness, then sources:
+--     luxuries, buildings, policies, religion, natural wonders, city-states, World Congress,
+--     unhappiness from number of cities, population, occupied cities, puppets, specialists
+local function n(f) local ok, v = pcall(f) return ok and v or 0 end
+emit("HP", p:GetExcessHappiness(), n(function() return p:GetHappiness() end), n(function() return p:GetUnhappiness() end),
+	n(function() return p:GetHappinessFromResources() end), n(function() return p:GetHappinessFromBuildings() end),
+	n(function() return p:GetHappinessFromPolicies() end), n(function() return p:GetHappinessFromReligion() end),
+	n(function() return p:GetHappinessFromNaturalWonders() end), n(function() return p:GetHappinessFromMinorCivs() end),
+	n(function() return p:GetHappinessFromLeagues() end),
+	-- the game keeps these unhappiness parts x100 (TopPanel.lua divides them)
+	n(function() return p:GetUnhappinessFromCityCount() end) / 100,
+	n(function() return p:GetUnhappinessFromCityPopulation() end) / 100,
+	n(function() return p:GetUnhappinessFromOccupiedCities() end) / 100,
+	n(function() return p:GetUnhappinessFromPuppetCityPopulation() end) / 100,
+	n(function() return p:GetUnhappinessFromCitySpecialists() end) / 100)
+
+-- LX: luxury resource, copies available to us (incl. imports), copies we produce
+for r in GameInfo.Resources() do
+	if r.ResourceClassType == "RESOURCECLASS_LUXURY" then
+		local available, total = p:GetNumResourceAvailable(r.ID, true), p:GetNumResourceTotal(r.ID, false)
+		if available > 0 or total > 0 then emit("LX", (r.Type:gsub("^RESOURCE_", "")), available, total) end
+	end
+end
+
+-- VC: player id, name, techs, Apollo Program built, spaceship parts, civs influenced (culture),
+--     civs needed for that, original capitals held, city-state allies, World Congress delegates
+local function projects(teamObj, names)
+	local count = 0
+	for _, name in ipairs(names) do
+		local proj = GameInfo.Projects[name]
+		if proj then count = count + teamObj:GetProjectCount(proj.ID) end
+	end
+	return count
+end
+local capitalsHeld, totalCapitals = {}, 0
+for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+	local owner = Players[i]
+	if owner and owner:IsEverAlive() then
+		for c in owner:Cities() do
+			if c:IsOriginalMajorCapital() then capitalsHeld[i] = (capitalsHeld[i] or 0) + 1 end
+		end
+	end
+	if Players[i] and Players[i]:IsEverAlive() then totalCapitals = totalCapitals + 1 end
+end
+local league = Game.GetNumActiveLeagues() > 0 and Game.GetActiveLeague() or nil
+local function victoryRow(i)
+	local who = Players[i]
+	local theirTeam = Teams[who:GetTeam()]
+	local allies = 0
+	for m = GameDefines.MAX_MAJOR_CIVS, GameDefines.MAX_CIV_PLAYERS - 1 do
+		if Players[m] and Players[m]:IsAlive() and Players[m]:IsMinorCiv() and Players[m]:GetAlly() == i then allies = allies + 1 end
+	end
+	local delegates = league and n(function() return league:CalculateStartingVotesForMember(i) end) or ""
+	emit("VC", i, nameOf(i), techsKnown(who),
+		projects(theirTeam, {"PROJECT_APOLLO_PROGRAM"}),
+		projects(theirTeam, {"PROJECT_SS_BOOSTER", "PROJECT_SS_COCKPIT", "PROJECT_SS_STASIS_CHAMBER", "PROJECT_SS_ENGINE"}),
+		n(function() return who:GetNumCivsInfluentialOn() end), n(function() return who:GetNumCivsToBeInfluentialOn() end),
+		capitalsHeld[i] or 0, allies, delegates)
+end
+victoryRow(iPlayer)
+for _, i in ipairs(majors) do victoryRow(i) end
+emit("VT", totalCapitals)
 
 local okSpies, spies = pcall(function() return p:GetEspionageSpies() end)
 if okSpies and spies and #spies > 0 then

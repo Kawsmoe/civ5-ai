@@ -1,38 +1,19 @@
-"""Command line entry point: py agent.py [--turns N] [--model NAME] [--say TEXT]"""
+"""Console entry point: py agent.py [--turns N] [--model NAME] [--say TEXT] [--ctx N] [--lessons-every N]
+
+For a window instead of the console: py gui.py
+"""
 import argparse
 import signal
 import sys
-import time
-import traceback
-import urllib.error
+from pathlib import Path
 
-from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS, Agent
-from .tuner import Tuner, TunerError
+if __package__ in (None, ""):
+    # run as a plain file (e.g. VS Code's Run button on this file): make the package importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "civ5ai"
 
-# Problems talking to the game or to Ollama: worth reconnecting and retrying the turn.
-RECOVERABLE = (TunerError, OSError, urllib.error.URLError)
-MAX_FAILURES_IN_A_ROW = 5
-
-
-def connect(wait=600):
-    """Connect to the game and wait until a game is loaded (it may be at the menu or reloading)."""
-    deadline = time.time() + wait
-    told = False
-    while True:
-        try:
-            tuner = Tuner()
-            if "InGame" in tuner.states:
-                return tuner
-            tuner.close()
-            problem = "the game is at a menu, not in a game"
-        except RECOVERABLE as e:
-            problem = f"can't reach the game ({e})"
-        if time.time() > deadline:
-            raise TunerError(f"gave up waiting: {problem}")
-        if not told:
-            print(f"  waiting: {problem}. Load a game (and close FireTuner)...")
-            told = True
-        time.sleep(3)
+from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS
+from .runner import Runner
 
 
 def main():
@@ -49,7 +30,9 @@ def main():
     ap.add_argument("--lessons-every", type=int, default=LESSONS_EVERY,
                     help=f"turns between reviews that update lessons.md (default {LESSONS_EVERY}; 0 = off)")
     args = ap.parse_args()
-    MODEL_OPTIONS["num_ctx"] = args.ctx
+
+    runner = Runner(model=args.model, ctx=args.ctx, turns=args.turns, lessons_every=args.lessons_every,
+                    say=args.say)
 
     # Ctrl+C asks for a pause instead of killing the run mid-command (which
     # could leave the game half-way through an action); we pause between turns.
@@ -62,52 +45,22 @@ def main():
         pause["wanted"] = True
         print("\n  [pausing after this turn... press Ctrl+C again to quit now]")
 
-    signal.signal(signal.SIGINT, on_ctrl_c)
+    def between_turns(r):
+        if not pause["wanted"]:
+            return
+        pause["wanted"] = False
+        msg = input("\nPaused. Message for the model (Enter to just continue, q to quit): ").strip()
+        if msg.lower() == "q":
+            r.stop_after_turn.set()
+        elif msg:
+            r.send(msg)
 
-    tuner = connect()
-    agent = Agent(tuner, args.model)
-    agent.human_message = args.say
-    agent.lessons_every = args.lessons_every
-    print(f"Logging to {agent.log_path}. Press Ctrl+C any time to pause and give the model direction.")
-    if agent.lessons:
-        print(f"Using {len(agent.lessons)} lessons from lessons.md.")
-    played, failures = 0, 0
+    signal.signal(signal.SIGINT, on_ctrl_c)
+    print("Press Ctrl+C any time to pause and give the model direction.")
     try:
-        while played < args.turns:
-            try:
-                agent.play_turn()
-                played, failures = played + 1, 0
-            except RECOVERABLE as e:
-                # e.g. a leader screen or reload dropped the connection: reconnect and redo the turn
-                failures += 1
-                print(f"\n  !! problem talking to the game or Ollama: {e!r}")
-                agent.record(error=repr(e), traceback=traceback.format_exc())
-                if failures >= MAX_FAILURES_IN_A_ROW:
-                    print("  !! giving up after repeated failures; see the log for details")
-                    break
-                print("  reconnecting and retrying the turn...")
-                tuner.close()
-                tuner = connect()
-                agent.attach(tuner)
-                continue
-            if pause["wanted"]:
-                pause["wanted"] = False
-                msg = input("\nPaused. Message for the model (Enter to just continue, q to quit): ").strip()
-                if msg.lower() == "q":
-                    break
-                agent.human_message = msg
-                agent.record(human_message=msg)
-        if agent.lessons_every:
-            agent.review_at_end()  # a clean stop: learn from the last few turns too
+        runner.run(between_turns)
     except KeyboardInterrupt:
         print("\n  stopped.")
-        agent.record(stopped="Ctrl+C")
-    except Exception as e:
-        # a bug rather than a hiccup: keep the details in the log as well as the console
-        agent.record(error=repr(e), traceback=traceback.format_exc())
-        raise
-    finally:
-        tuner.close()  # resets the connection so the game is free for the next run
 
 
 if __name__ == "__main__":

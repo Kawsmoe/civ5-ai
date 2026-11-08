@@ -7,6 +7,7 @@ with "ok:" or "error:". That string goes back to the model as-is.
 import time
 from pathlib import Path
 
+from .popups import close_named
 from .tuner import TunerError
 
 LUA = (Path(__file__).parent / "lua" / "actions.lua").read_text()
@@ -173,6 +174,35 @@ class Actions:
         if unit_index < 0:
             return "error: could not find the archaeologist for this choice"
         return self._call("archaeology", str(choice).upper(), unit_index)
+
+    def gift_gold(self, player_id, size="small"):
+        return self._call("gift_gold", int(player_id), str(size).lower())
+
+    def pledge_protection(self, player_id):
+        return self._call("pledge_protection", int(player_id))
+
+    def ruin_choice_open(self):
+        """Is the 'choose your ancient ruins reward' screen waiting for an answer?"""
+        try:
+            return self.t.run("print(not ContextPtr:IsHidden())", state="ChooseGoodyHutReward") == ["true"]
+        except (TunerError, KeyError):
+            return False
+
+    def ruin_options(self):
+        """{reward id: description} the choosing unit may pick from."""
+        options = {}
+        for line in self.t.run("_AI.goody_options()"):
+            tag, _, rest = line.partition("\t")
+            gid, _, text = rest.partition("\t")
+            if tag == "GOODY" and gid.isdigit():
+                options[int(gid)] = text
+        return options
+
+    def choose_ruin_reward(self, reward_id):
+        result = self._call("choose_ruin_reward", int(reward_id))
+        if result.startswith("ok"):
+            close_named(self.t, "ChooseGoodyHutReward")  # we answered outside the screen, so close it
+        return result
 
     def end_turn(self):
         # The game's end-turn blocker only refreshes on its next UI update, so

@@ -1,0 +1,2 @@
+# only needed for the window (py gui.py); the console agent uses the standard library
+PyQt6>=6.5

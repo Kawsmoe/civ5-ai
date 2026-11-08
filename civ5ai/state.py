@@ -26,7 +26,8 @@ def parse(lines):
              "spy_targets": [], "steal_options": [], "great_person_options": [],
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
              "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": [],
-             "unexplored": None, "tech_goals": []}
+             "unexplored": None, "tech_goals": [], "city_states": {}, "happy": None, "luxuries": [],
+             "victory": [], "total_capitals": None}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -56,11 +57,14 @@ def parse(lines):
                 "moves": _num(f[4]), "max_moves": _num(f[5]), "hp": _num(f[6]),
                 "activity": int(f[7]), "automated": f[8] == "true",
                 "combat": f[9] == "true", "sites": [], "promotions": [], "missions": [],
-                "routes": [], "steps": [], "builds": [], "work_targets": [], "enemies_near": 0}
+                "routes": [], "steps": [], "builds": [], "work_targets": [], "enemies_near": 0,
+                "great_person": "", "gp_builds": [], "gp_trade": None}
         elif tag == "S":
             state["units"][int(f[0])]["sites"].append(
                 {"x": int(f[1]), "y": int(f[2]), "value": int(f[3]), "dist": int(f[4]),
-                 "info": f[5] if len(f) > 5 else ""})
+                 "info": f[5] if len(f) > 5 else "", "found_in": _num(f[6]) if len(f) > 6 else None,
+                 "near_city": f[7] if len(f) > 7 else "", "near_dist": _num(f[8]) if len(f) > 8 else None,
+                 "risk": f[9] if len(f) > 9 else ""})
         elif tag == "CT":
             state["cities"][int(f[0])].update(
                 {"land": f[1], "river_tiles": _num(f[2]), "coastal": f[3] == "true"})
@@ -96,6 +100,25 @@ def parse(lines):
             state["rivals"][int(f[0])]["wonders"].append(f[1])
         elif tag == "RW":
             state["rival_relations"].append({"a": int(f[0]), "b": int(f[1]), "kind": f[2]})
+        elif tag == "CS":
+            state["city_states"][int(f[0])] = {
+                "id": int(f[0]), "trait": f[1], "status": f[2], "influence": _num(f[3]), "ally": f[4],
+                "protected": f[5] == "true", "can_pledge": f[6] == "true",
+                "gift_influence": _num(f[7]), "gift_cost": _num(f[8]), "quests": ""}
+        elif tag == "HP":
+            keys = ["excess", "happiness", "unhappiness", "luxuries", "buildings", "policies", "religion",
+                    "natural_wonders", "city_states", "world_congress", "u_cities", "u_population",
+                    "u_occupied", "u_puppets", "u_specialists"]
+            state["happy"] = {k: _num(v) for k, v in zip(keys, f)}
+        elif tag == "LX":
+            state["luxuries"].append({"type": f[0], "available": int(f[1]), "produced": int(f[2])})
+        elif tag == "VC":
+            state["victory"].append({
+                "id": int(f[0]), "name": f[1], "techs": _num(f[2]), "apollo": _num(f[3]), "parts": _num(f[4]),
+                "influential": _num(f[5]), "influence_needed": _num(f[6]), "capitals": _num(f[7]),
+                "cs_allies": _num(f[8]), "delegates": _num(f[9])})
+        elif tag == "VT":
+            state["total_capitals"] = int(f[0])
         elif tag == "EX":
             state["unexplored"] = {"unseen": int(f[0]), "total": int(f[1])}
         elif tag == "ND":
@@ -175,6 +198,13 @@ def parse(lines):
         elif tag == "WT":
             state["units"][int(f[0])]["work_targets"].append(
                 {"x": int(f[1]), "y": int(f[2]), "resource": f[3], "build": f[4], "dist": int(f[5])})
+        elif tag == "GPU":
+            state["units"][int(f[0])]["great_person"] = f[1]
+        elif tag == "GPB":
+            state["units"][int(f[0])]["gp_builds"].append(
+                {"build": f[1], "x": int(f[2]), "y": int(f[3]), "dist": int(f[4])})
+        elif tag == "GPT":
+            state["units"][int(f[0])]["gp_trade"] = {"city": f[1], "x": int(f[2]), "y": int(f[3]), "dist": int(f[4])}
         elif tag == "TH":
             state["threats"].append({"city": int(f[0]), "city_name": f[1], "x": int(f[2]), "y": int(f[3]),
                                      "type": f[4], "dist": int(f[5])})
@@ -190,8 +220,30 @@ def _clean(text, limit=110):
     return text if len(text) <= limit else text[:limit - 3] + "..."
 
 
+QUESTS = """
+local me = Game.GetActivePlayer()
+for i = GameDefines.MAX_MAJOR_CIVS, GameDefines.MAX_CIV_PLAYERS - 1 do
+	local cs = Players[i]
+	if cs and cs:IsAlive() and cs:IsMinorCiv() and Teams[Players[me]:GetTeam()]:IsHasMet(cs:GetTeam()) then
+		local ok, text = pcall(GetActiveQuestToolTip, me, i)
+		if ok and text and text ~= "" then print("Q\t" .. i .. "\t" .. text:gsub("%[NEWLINE%]", " | ")) end
+	end
+end
+"""
+
+
 def get_state(tuner):
-    return parse(tuner.run(LUA, timeout=15))
+    state = parse(tuner.run(LUA, timeout=15))
+    if state["city_states"] and "DiploList" in tuner.states:
+        try:
+            for line in tuner.run(QUESTS, state="DiploList", timeout=5):
+                tag, _, rest = line.partition("\t")
+                cid, _, text = rest.partition("\t")
+                if tag == "Q" and cid.isdigit() and int(cid) in state["city_states"]:
+                    state["city_states"][int(cid)]["quests"] = _clean(text, 300)
+        except Exception:  # quests are a nice-to-have; never fail the turn over them
+            pass
+    return state
 
 
 def needs_orders(u):
@@ -247,9 +299,12 @@ def summarize(s):
         out.extend(f"    {b['type']}: {b['text']}" for b in options)
 
     # Other civs, espionage and one-off choices
+    out.extend(_victory_section(s))
     out.extend(_rivals_section(s))
+    out.extend(_city_states_section(s))
+    out.extend(_happiness_section(s))
     minors = [c for c in s["civs"] if c["kind"] == "MINOR"]
-    if minors:
+    if minors and not s["city_states"]:
         out.append("City-states you know: " + "; ".join(
             f"player {c['id']} {c['name']} (influence {c['influence']}"
             + (", AT WAR" if c["at_war"] else "") + ")" for c in minors))
@@ -292,8 +347,9 @@ def summarize(s):
         out.append(f"  city {c['id']} {c['name']} at ({c['x']},{c['y']}): pop {c['pop']} "
                    f"(grows in {c['growth_turns']}t, food {c['food']:+}), "
                    f"production {c['production']}, building {producing}")
-        out.append(f"    hp {c['hp']}/{c['max_hp']}, defense {c['defense']}, "
-                   f"religion {c['majority_religion'] or 'none'}")
+        if "hp" in c:
+            out.append(f"    hp {c['hp']}/{c['max_hp']}, defense {c['defense']}, "
+                       f"religion {c['majority_religion'] or 'none'}")
         if c["land"]:
             water = ", coastal" if c["coastal"] else ""
             out.append(f"    land around it: {c['land']}; {c['river_tiles']} river tiles{water}")
@@ -331,8 +387,8 @@ def summarize(s):
         else:
             flag = ""
         strength = ""
-        if u["strength"]:
-            strength = f" strength {u['strength']}" + (f" ranged {u['ranged']}" if u["ranged"] else "")
+        if u.get("strength"):
+            strength = f" strength {u['strength']}" + (f" ranged {u['ranged']}" if u.get("ranged") else "")
         danger = ""
         if u["enemies_near"]:
             danger = f" - {u['enemies_near']} enemy unit(s) within 2 tiles"
@@ -342,7 +398,9 @@ def summarize(s):
                    f"moves {u['moves']}/{u['max_moves']} hp {u['hp']}/100{strength}{flag}{danger}")
         if u["promotions"]:
             out.append("    PROMOTION READY: " + ", ".join(u["promotions"]))
-        if u["missions"]:
+        if u.get("great_person"):
+            out.extend("    " + line for line in _great_person_lines(u))
+        elif u["missions"]:
             out.append("    special actions available here: " + ", ".join(u["missions"]))
         if u["builds"]:
             out.append("    can build here (build_improvement): " + ", ".join(
@@ -360,9 +418,12 @@ def summarize(s):
                 f"food {r['food']}, production {r['production']}" for r in u["routes"]))
         if u["sites"]:
             best = u["sites"][0]["value"]
-            out.append("    best city sites:")
-            out.extend(f"      ({t['x']},{t['y']}) score {round(100 * t['value'] / best)}, "
-                       f"{t['dist']} tiles away [{t['info']}]" for t in u["sites"])
+            out.append("    best city sites (score = the game's own rating, 100 = best here):")
+            out.extend("      " + _site_line(t, best, u, s) for t in u["sites"])
+            if not s["cities"]:
+                out.append("    FIRST CITY: founding right where the Settler stands, or 1 tile away, is usually "
+                           "best; each turn of delay costs growth and production. Only walk further for a "
+                           "clearly better site (coast, river, or much higher score).")
 
     if s["cities"] and not any(u["type"] == "UNIT_SETTLER" for u in s["units"].values()):
         # spell this out: small models keep hunting for the settler they already used
@@ -453,7 +514,9 @@ def summarize(s):
         if not c["producing"]:
             todo.append(f"pick production for city {c['id']} {c['name']} (set_production)")
     for u in s["units"].values():
-        if needs_orders(u):
+        if needs_orders(u) and u.get("great_person"):
+            todo.append(f"decide how to use Great Person {u['id']} {u['type']} (its options are listed under it)")
+        elif needs_orders(u):
             todo.append(f"give orders to unit {u['id']} {u['type']}")
     for poi in s["pois"]:
         if poi["kind"] == "RUINS":
@@ -489,6 +552,162 @@ def summarize(s):
         out.append("OPPORTUNITIES: " + "; ".join(chances))
     out.append("Then call end_turn.")
     return "\n".join(out)
+
+
+CS_BONUS = {"maritime": "food in your cities", "cultured": "culture", "militaristic": "free military units",
+            "mercantile": "happiness and gold", "religious": "faith"}
+
+
+def _city_states_section(s):
+    if not s["city_states"]:
+        return []
+    names = {c["id"]: c["name"] for c in s["civs"]}
+    out = ["\nCity-states (friends get a bonus, the ally gets more; influence decays each turn):"]
+    for cs in s["city_states"].values():
+        bits = [f"{cs['trait']} - friends get {CS_BONUS.get(cs['trait'], 'a bonus')}", f"you: {cs['status']}",
+                f"influence {cs['influence']}"]
+        if cs["ally"] and cs["ally"] != "you":
+            bits.append(f"ally: {cs['ally']}")
+        if cs["protected"]:
+            bits.append("you protect it")
+        elif cs["can_pledge"]:
+            bits.append("you could pledge protection")
+        if cs["gift_influence"]:
+            bits.append(f"a small gift ({cs['gift_cost']} gold) gives +{cs['gift_influence']} influence")
+        out.append(f"  player {cs['id']} {names.get(cs['id'], '?')}: " + ", ".join(bits))
+        if cs["quests"]:
+            out.append(f"    quests: {cs['quests']}")
+    return out
+
+
+def _happiness_section(s):
+    h = s["happy"]
+    if not h:
+        return []
+    plus = [(k, h[k]) for k in ("luxuries", "buildings", "policies", "religion", "natural_wonders",
+                                "city_states", "world_congress") if h.get(k)]
+    minus = [(k[2:], h[k]) for k in ("u_cities", "u_population", "u_occupied", "u_puppets", "u_specialists")
+             if h.get(k)]
+    out = [f"\nHappiness {h['excess']:+}: {h['happiness']} happiness ("
+           + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in plus) + f") minus {h['unhappiness']} unhappiness ("
+           + ", ".join(f"{k} {v:g}" for k, v in minus) + ")."]
+    if h["excess"] <= -10:
+        out.append("  VERY UNHAPPY: no growth, combat penalty, rebels may appear. Fix this first.")
+    elif h["excess"] < 0:
+        out.append("  UNHAPPY: cities grow much slower. Get new luxuries, happiness buildings or city-state friends.")
+    elif h["excess"] <= 3:
+        out.append("  Close to unhappiness: a new city or more population will push you below 0.")
+    if s["luxuries"]:
+        lux = []
+        for x in s["luxuries"]:
+            spare = x["available"] - 1
+            lux.append(f"{x['type']} x{x['available']}" + (f" ({spare} spare to trade)" if spare > 0 else ""))
+        out.append("  Luxuries you have (each different type adds happiness; copies don't): " + ", ".join(lux))
+    have = {x["type"] for x in s["luxuries"] if x["available"] > 0}
+    nearby = sorted({r["type"] for c in s["cities"].values() for r in c["resources"]
+                     if r["class"] == "luxury" and not r["improved"] and r["type"] not in have})
+    if nearby:
+        out.append("  New luxury types near your cities, not improved yet: " + ", ".join(nearby))
+    return out
+
+
+def _victory_section(s):
+    rows = s["victory"]
+    me = next((r for r in rows if r["name"] == "you"), None)
+    if not me:
+        return []
+    rivals = [r for r in rows if r is not me]
+
+    def leader(key):
+        return max(rivals, key=lambda r: r[key] or 0) if rivals else None
+
+    def line(label, key, fmt):
+        best = leader(key)
+        return f"  {label}: you {fmt(me)}" + (f"; best rival {best['name']} {fmt(best)}" if best else "")
+
+    out = ["\nVictory race (your plan should name the victory you are going for):",
+           line("Science (techs, then the spaceship)", "techs",
+                lambda r: f"{r['techs']} techs, Apollo {'built' if r['apollo'] else 'no'}, {r['parts']} spaceship parts"),
+           line("Culture (be influential on every civ)", "influential",
+                lambda r: f"influential on {r['influential']} of {r['influence_needed'] or '?'}"),
+           line(f"Domination (hold all {s['total_capitals'] or '?'} original capitals)", "capitals",
+                lambda r: f"{r['capitals']} capitals"),
+           line("Diplomatic (World Leader vote)", "cs_allies",
+                lambda r: f"{r['cs_allies']} city-state allies"
+                + (f", {r['delegates']} delegates" if r["delegates"] not in (None, "") else ""))]
+    return out
+
+
+# what each Great Person can do: (one-off action, where it works), and what its improvement gives
+GREAT_PEOPLE = {
+    "SCIENTIST": ("MISSION_DISCOVER: a burst of science toward your research", "anywhere",
+                  "an Academy: extra science every turn"),
+    "ENGINEER": ("MISSION_HURRY: a burst of production in the city it stands in (best on a wonder)",
+                 "inside a city that is building something", "a Manufactory: extra production every turn"),
+    "MERCHANT": ("MISSION_TRADE: a lot of gold and city-state influence",
+                 "inside a city-state's territory", "a Customs House: extra gold every turn"),
+    "ARTIST": ("MISSION_GOLDEN_AGE, or MISSION_CREATE_GREAT_WORK (culture and tourism)",
+               "anywhere; a great work needs a city with an empty art slot", ""),
+    "WRITER": ("MISSION_GIVE_POLICIES (culture toward a policy), or MISSION_CREATE_GREAT_WORK",
+               "anywhere; a great work needs a city with an empty writing slot", ""),
+    "MUSICIAN": ("MISSION_ONE_SHOT_TOURISM (a concert tour: tourism with that civ), or MISSION_CREATE_GREAT_WORK",
+                 "a concert tour in another civ's territory; a great work needs an empty music slot", ""),
+    "GREAT_GENERAL": ("keep it next to your army: +15% combat strength nearby", "with your units",
+                      "a Citadel: takes surrounding tiles and damages enemies next to it"),
+    "GREAT_ADMIRAL": ("keep it with your fleet (+15%), or repair all your ships", "with your ships", ""),
+    "PROPHET": ("MISSION_FOUND_RELIGION / MISSION_ENHANCE_RELIGION / MISSION_SPREAD_RELIGION",
+                "inside a city (yours for founding/enhancing, any for spreading)", "a Holy Site: extra faith every turn"),
+}
+
+
+def _great_person_lines(u):
+    kind = next((k for k in GREAT_PEOPLE if k in u["great_person"]), None)
+    lines = [f"GREAT PERSON - choose how to use it (each use consumes it, except generals/admirals kept with units):"]
+    if kind:
+        action, where, improvement = GREAT_PEOPLE[kind]
+        lines.append(f"  action: {action} - works {where}")
+        if improvement:
+            lines.append(f"  or build {improvement} (build_improvement with x,y)")
+    if u["missions"]:
+        lines.append("  possible right where it stands (unit_mission): " + ", ".join(u["missions"]))
+    for b in u["gp_builds"]:
+        lines.append(f"  nearest tile for {b['build']}: ({b['x']},{b['y']}), {b['dist']} tiles away")
+    if u.get("gp_trade"):
+        t = u["gp_trade"]
+        lines.append(f"  nearest city-state for a trade mission: {t['city']} at ({t['x']},{t['y']}), {t['dist']} tiles away "
+                     "(move into its territory, then MISSION_TRADE)")
+    return lines
+
+
+def _reserved_sites(s):
+    """Sites a Settler is already walking to: {(x, y): unit id}."""
+    out = {}
+    for u in s["units"].values():
+        if u["type"] == "UNIT_SETTLER" and u.get("destination"):
+            x, _, y = u["destination"].partition(",")
+            if x.lstrip("-").isdigit() and y.lstrip("-").isdigit():
+                out[(int(x), int(y))] = u["id"]
+    return out
+
+
+def _site_line(t, best, unit, s):
+    when = t.get("found_in")
+    if when is None:
+        timing = f"{t['dist']} tiles away"
+    elif when == 0:
+        timing = "can found this turn"
+    else:
+        timing = f"city in about {when} turn{'s' if when != 1 else ''}"
+    text = f"({t['x']},{t['y']}) score {round(100 * t['value'] / best)}, {timing} [{t['info']}]"
+    if t.get("near_city"):
+        shares = " - would share tiles with it" if t["near_dist"] is not None and t["near_dist"] <= 5 else ""
+        text += f", {t['near_dist']} tiles from {t['near_city']}{shares}"
+    if t.get("risk"):
+        text += f". RISK: {t['risk']} - send a military unit with the Settler"
+    taken = _reserved_sites(s).get((t["x"], t["y"]))
+    if taken and taken != unit["id"]:
+        text += f". TAKEN: Settler {taken} is already heading here"
+    return text
 
 
 def _resource_status(r):

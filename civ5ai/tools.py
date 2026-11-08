@@ -89,6 +89,8 @@ TOOLS = [
     # One-off choices
     tool("choose_great_person", "Pick a great person when a choice is due.",
          kind=_str(enum=["FAITH", "FREE", "MAYA"]), unit_type=_str()),
+    tool("choose_ruin_reward", "Pick the ancient ruins reward when the state says a unit may choose one.",
+         reward_id=_int("reward id from the listed options")),
     tool("archaeology", "Make the choice for a finished archaeology dig.",
          choice=_str(enum=["LANDMARK", "ARTIFACT", "ARTIFACT_OTHER", "CULTURE", "WRITING"])),
 
@@ -96,6 +98,10 @@ TOOLS = [
     tool("respond_to_leader", "Answer a leader who is talking to you, using one of the numbered options shown.",
          option=_int()),
     tool("declare_war", "Declare war on a civ or city-state.", player_id=_int()),
+    tool("gift_gold", "Give gold to a city-state for influence (the state shows what a small gift buys).",
+         player_id=_int("city-state player id"), size=_str(enum=["small", "medium", "large"])),
+    tool("pledge_protection", "Pledge to protect a city-state: more influence over time, but you are expected to "
+         "defend it.", player_id=_int("city-state player id")),
     tool("move_spy", "Send a spy to a city (player_id and city_id from the state), or pass -1 for both to "
          "recall it. as_diplomat=true in another civ's capital makes it a diplomat instead of a thief.",
          spy_id=_int(), player_id=_int(), city_id=_int(),

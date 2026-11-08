@@ -72,6 +72,42 @@ def extract_text_tool_calls(content, tools=TOOLS):
     return calls
 
 
+def console_event(kind, text="", **data):
+    """Default event sink: print to the console, as the agent always did."""
+    if kind == "turn":
+        print(f"\n===== Turn {data.get('turn')} =====\n{text}\n")
+    elif text:
+        print(("  !! " if kind in ("warn", "error") else "  ") + text)
+
+
+def turn_overview(s, text):
+    """The numbers and lists a person wants at a glance, pulled from a state and its summary."""
+    lines = text.splitlines()
+
+    def after(prefix):
+        line = next((l for l in lines if l.startswith(prefix)), "")
+        return [x.strip() for x in line[len(prefix):].split(";") if x.strip()] if line else []
+
+    victory = []
+    start = next((i for i, l in enumerate(lines) if l.startswith("Victory race")), None)
+    if start is not None:
+        for l in lines[start + 1:]:
+            if not l.startswith("  "):
+                break
+            victory.append(l.strip())
+    return {
+        "turn": s["turn"], "civ": s["civ"], "gold": s["gold"], "gold_rate": s["gold_rate"],
+        "science": s["science"], "culture": s["culture"], "faith": s["faith"], "happiness": s["happiness"],
+        "research": s["research"], "research_turns": s["research_turns"], "blocking": s["blocking"],
+        "cities": [{"name": c["name"], "pop": c["pop"], "producing": c["producing"],
+                    "turns": c["production_turns"]} for c in s["cities"].values()],
+        "units": [{"id": u["id"], "type": u["type"].replace("UNIT_", "").replace("_", " ").title(),
+                   "hp": u["hp"], "where": f"{u['x']},{u['y']}"} for u in s["units"].values()],
+        "todo": after("TO DO THIS TURN (required): "), "threats": after("THREATS: "),
+        "opportunities": after("OPPORTUNITIES: "), "victory": victory,
+    }
+
+
 def chat(model, messages, tools=TOOLS):
     """One Ollama chat call with our tools; returns the reply message."""
     body = json.dumps({"model": model, "messages": messages, "tools": tools,
@@ -82,7 +118,8 @@ def chat(model, messages, tools=TOOLS):
 
 
 class Agent:
-    def __init__(self, tuner, model=DEFAULT_MODEL, log_path=None):
+    def __init__(self, tuner, model=DEFAULT_MODEL, log_path=None, on_event=console_event):
+        self.on_event = on_event
         self.attach(tuner)
         self.model = model
         LOG_DIR.mkdir(exist_ok=True)
@@ -97,6 +134,13 @@ class Agent:
         self.lessons = lessons.load()
         self.lessons_every = LESSONS_EVERY
         self.period = None  # lessons.Period: what happened since the last review
+
+    def event(self, kind, text="", **data):
+        """Report what's happening (turn, model, action, info, warn, error, lessons, waiting)."""
+        try:
+            self.on_event(kind, text, **data)
+        except Exception:  # a display problem must never stop the game
+            pass
 
     def attach(self, tuner):
         """Use a (new) tuner connection; reinstalls the in-game actions."""
@@ -129,9 +173,12 @@ class Agent:
             return diplomacy.respond(self.t, args.get("option", 0))
         if name == "end_turn":
             close_popups(self.t, keep_choices=False)
-            fired = self.fire_city_shots()
-            if fired:
-                print("  (auto) " + "; ".join(fired))
+            picked = self.settle_ruin_choice()
+            if picked:
+                self.event("action", f"(auto) {picked}", tool="choose_ruin_reward", result=picked,
+                           ok=picked.startswith("ok"), auto=True)
+            for r in self.fire_city_shots():
+                self.event("action", f"(auto) {r}", tool="city_attack", result=r, ok=r.startswith("ok"), auto=True)
         fn = getattr(self.a, name, None)
         if fn is None:
             return f"error: unknown tool {name}"
@@ -197,7 +244,7 @@ class Agent:
         """Let the model rewrite its lessons from what happened since the last review."""
         if self.period is None or s["turn"] <= self.period.start["turn"]:
             return
-        print(f"\n  reviewing turns {self.period.start['turn']}-{s['turn']} to update lessons.md...")
+        self.event("info", f"reviewing turns {self.period.start['turn']}-{s['turn']} to update lessons.md...")
         prompt = self.period.describe(s, self.plan, self.lessons)
         messages = [{"role": "system", "content": lessons.REVIEW_SYSTEM}, {"role": "user", "content": prompt}]
         new = None
@@ -212,10 +259,11 @@ class Agent:
             self.record(error=f"lessons review: {e!r}")
         if isinstance(new, list) and new:
             self.lessons = lessons.save(new, note)
-            print("  lessons now:\n" + "\n".join(f"    - {lesson}" for lesson in self.lessons))
+            self.event("lessons", "lessons now:\n" + "\n".join(f"    - {lesson}" for lesson in self.lessons),
+                       lessons=self.lessons)
             self.record(turn=s["turn"], review=prompt, lessons=self.lessons)
         else:
-            print("  (the model didn't return lessons; keeping the old ones)")
+            self.event("info", "(the model didn't return lessons; keeping the old ones)")
         self.period = lessons.Period(s)
 
     def review_at_end(self):
@@ -255,22 +303,41 @@ class Agent:
         return None
 
     def describe(self, s):
-        """State summary plus any leader currently talking to us."""
+        """State summary plus any leader currently talking to us, plus a pending ruins choice."""
         d = diplomacy.get_diplomacy(self.t)
-        return summarize(s) + ("\n" + diplomacy.summarize(d) if d else "")
+        return (summarize(s) + ("\n" + diplomacy.summarize(d) if d else "")
+                + ("\n\n" + self.ruin_choice_text() if self.a.ruin_choice_open() else ""))
+
+    def ruin_choice_text(self):
+        options = self.a.ruin_options()
+        return ("RUINS REWARD CHOICE: your unit entered ancient ruins and may pick its reward "
+                "(choose_ruin_reward with the id): "
+                + "; ".join(f"id {gid} = {text}" for gid, text in options.items()))
+
+    def settle_ruin_choice(self):
+        """Before ending the turn: if the model left a ruins choice open, pick the first option."""
+        if not self.a.ruin_choice_open():
+            return None
+        options = self.a.ruin_options()
+        if not options:
+            return None
+        r = self.a.choose_ruin_reward(next(iter(options)))
+        self.record(tool="choose_ruin_reward", args={"reward_id": next(iter(options))}, result=r, auto=True)
+        return r
 
     def handle_screens_while_waiting(self):
         """During the AIs' turns: answer leaders who talk to us and clear popups."""
         d = diplomacy.get_diplomacy(self.t)
         if d:
-            print("\n  (leader screen while the AIs move)" + diplomacy.summarize(d))
+            self.event("info", "leader screen while the AIs move:" + diplomacy.summarize(d))
             r = self.answer_leader(d)
-            print(f"  respond_to_leader -> {r}")
+            self.event("action", f"respond_to_leader -> {r}", tool="respond_to_leader", result=r,
+                       ok=r.startswith("ok"))
             return
         # a leader screen we can't read (e.g. a plain greeting): leave it the way "Return" does
         closed = close_popups(self.t, keep_choices=False)
         if closed:
-            print(f"  closed while waiting: {', '.join(closed)}")
+            self.event("info", f"closed while waiting: {', '.join(closed)}")
 
     def answer_leader(self, d):
         """Let the model answer a leader screen in a short separate chat; decline if it doesn't."""
@@ -300,8 +367,8 @@ class Agent:
         return r
 
     def wait_for_human(self, blocker):
-        print(f"  !! game needs {blocker}, which the agent can't handle yet - "
-              "please do it in the game window; waiting...")
+        self.event("warn", f"game needs {blocker}, which the agent can't handle yet - "
+                           "please do it in the game window; waiting...")
         while get_state(self.t)["blocking"] == blocker:
             time.sleep(2)
 
@@ -402,7 +469,7 @@ class Agent:
     def play_turn(self):
         closed = close_popups(self.t)
         if closed:
-            print(f"  closed popups: {', '.join(closed)}")
+            self.event("info", f"closed popups: {', '.join(closed)}")
         s = get_state(self.t)
         if s["blocking"] not in HANDLED_BLOCKERS:
             self.wait_for_human(s["blocking"])
@@ -413,7 +480,7 @@ class Agent:
             self.review(s, f"turn {s['turn']}")
         lost = self.track_units(s)
         text = self.build_prompt(s, lost)
-        print(f"\n===== Turn {s['turn']} =====\n{text}\n")
+        self.event("turn", text, plan=self.plan, lessons=self.lessons, **turn_overview(s, text))
         self.record(turn=s["turn"], state=text)
 
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
@@ -427,14 +494,14 @@ class Agent:
             # keep the transcript short: a long essay that did nothing just eats context
             content = (reply.get("content") or "").strip()
             if content:
-                print(f"  model: {content[:300]}")
+                self.event("model", content)
             messages.append({**reply, "content": content[:500]})
             if not calls:
                 silent += 1
                 self.period.silent_replies += 1
                 actions.append("(no tool call)")
                 if silent >= MAX_SILENT_REPLIES:
-                    print("  model keeps answering without calling tools; finishing the turn with defaults")
+                    self.event("warn", "model keeps answering without calling tools; finishing the turn with defaults")
                     break
                 # nudge briefly; re-sending the whole state grows the context until the
                 # system prompt falls out of Ollama's window and the model loops
@@ -469,12 +536,17 @@ class Agent:
                     if name in ("move_unit", "attack"):
                         # moving can discover things (natural wonders, ruins) that open popups
                         close_popups(self.t)
+                        if self.a.ruin_choice_open():
+                            result += ". " + self.ruin_choice_text()
                 if result.startswith("ok") and name in ("set_research", "set_production", "found_city", "attack"):
                     s = get_state(self.t)  # keep the guards and roster in sync
                     if name == "attack":
                         for uid, (utype, x, y) in self.track_units(s).items():
                             result += f". {utype} {uid} was lost in this fight and no longer exists"
-                print(f"  {name}({', '.join(f'{k}={v}' for k, v in args.items())}) -> {result}")
+                self.event("action", f"{name}({', '.join(f'{k}={v}' for k, v in args.items())}) -> {result}",
+                           tool=name, args=args, result=result, ok=result.startswith("ok"))
+                if name == "update_plan" and result.startswith("ok"):
+                    self.event("plan", self.plan, plan=self.plan)
                 self.record(turn=s["turn"], tool=name, args=args, result=result)
                 messages.append({"role": "tool", "content": result, "tool_name": name})
                 actions.append(f"{name}({', '.join(str(v) for v in args.values())}) {result.split(':')[0]}")
@@ -483,17 +555,21 @@ class Agent:
                     break
 
         if not ended:
-            print("  action cap reached; finishing the turn with defaults")
+            self.event("warn", "action cap reached; finishing the turn with defaults")
             for r in self.fallback(get_state(self.t)):
-                print(f"  fallback -> {r}")
+                self.event("action", f"fallback -> {r}", result=r, ok=r.startswith("ok"), auto=True)
             close_popups(self.t, keep_choices=False)
+            picked = self.settle_ruin_choice()
+            if picked:
+                self.event("action", f"fallback -> {picked}", result=picked, ok=picked.startswith("ok"), auto=True)
             for r in self.fire_city_shots():
-                print(f"  fallback -> {r}")
+                self.event("action", f"fallback -> {r}", result=r, ok=r.startswith("ok"), auto=True)
             r = self.a.end_turn()
-            print(f"  end_turn -> {r}")
+            self.event("action", f"end_turn -> {r}", tool="end_turn", result=r, ok=r.startswith("ok"), auto=True)
             if not r.startswith("ok"):
                 self.wait_for_human(get_state(self.t)["blocking"])
         # only what worked; replaying failures back to the model invites repeats
         self.last_turn_actions = [x for x in actions if x.endswith(" ok") and not x.startswith("end_turn")]
+        self.event("waiting", "waiting for the other players to move...")
         new_turn = self.a.wait_for_my_turn(on_wait=self.handle_screens_while_waiting)
         self.record(turn=s["turn"], ended=True, next_turn=new_turn)

@@ -41,6 +41,13 @@ SNAPSHOT = [
     T.join(["CO", "2", "[COLOR_NEGATIVE_TEXT]You have settled too near them[ENDCOLOR]"]),
     T.join(["CW", "2", "PYRAMID"]),
     T.join(["ND", "16385", "1"]),
+    T.join(["K", "23", "MINOR", "Geneva", "false", "true", "", "35"]),
+    T.join(["CS", "23", "cultured", "FRIENDS", "35", "Rome", "false", "true", "15", "250"]),
+    T.join(["HP", "2", "21", "19", "12", "4", "0", "0", "0", "5", "0", "6", "13", "0", "0", "0"]),
+    T.join(["LX", "WINE", "2", "2"]),
+    T.join(["VC", "0", "you", "12", "0", "0", "0", "7", "1", "0", ""]),
+    T.join(["VC", "2", "Rome", "16", "0", "0", "1", "7", "1", "2", ""]),
+    T.join(["VT", "8"]),
 ]
 
 
@@ -94,6 +101,16 @@ class SummarizeTest(unittest.TestCase):
                          "Attitude toward you: GUARDED. Nearest city Antium is 7 tiles from your Rio de Janeiro.",
                          "Why: You have settled too near them", "Wonders: PYRAMID",
                          "1 enemy unit(s) within 2 tiles",
+                         "player 23 Geneva: cultured - friends get culture, you: FRIENDS, influence 35, ally: Rome, "
+                         "you could pledge protection, a small gift (250 gold) gives +15 influence",
+                         "Happiness +2: 21 happiness (luxuries 12, buildings 4, city states 5) minus 19 unhappiness "
+                         "(cities 6, population 13).",
+                         "Close to unhappiness",
+                         "WINE x2 (1 spare to trade)",
+                         "Science (techs, then the spaceship): you 12 techs, Apollo no, 0 spaceship parts; "
+                         "best rival Rome 16 techs",
+                         "Domination (hold all 8 original capitals): you 1 capitals",
+                         "Diplomatic (World Leader vote): you 0 city-state allies; best rival Rome 2 city-state allies",
                          "deals ~20 damage (enemy hp 100 -> 80), takes ~45 (your hp 100 -> 55)",
                          "land around it: grassland 9, plains hills 4, coast 6; 5 river tiles, coastal",
                          "WINE (luxury) at (20,24) UNIMPROVED - needs BUILD_PLANTATION, which needs TECH_CALENDAR",
@@ -118,6 +135,46 @@ class SummarizeTest(unittest.TestCase):
         # turn 0: no cities, nothing optional present
         s = parse([line for line in SNAPSHOT if line.split(T)[0] in ("P", "L", "R")])
         self.assertIn("Cities: none yet.", summarize(s))
+
+
+
+
+class SettleSitesTest(unittest.TestCase):
+    def test_timing_risk_and_reservations(self):
+        recs = [T.join(r) for r in [
+            ["P", "0", "Germany", "0", "0", "0", "0", "0", "9", "UNITS", "", ""],
+            ["L", "0", "10", "0", "false"], ["R", "0", "0", "false", "", "10", "4", "200", "0"],
+            ["U", "8192", "UNIT_SETTLER", "15", "43", "2", "2", "100", "0", "false", "false"],
+            ["S", "8192", "17", "42", "5400", "2", "coast; WINE", "2", "", "", ""],
+            ["S", "8192", "15", "43", "5200", "0", "fresh water", "0", "", "", "barbarian camp 3 tiles away"],
+            ["U", "9000", "UNIT_SETTLER", "10", "40", "0", "2", "100", "8", "false", "false"],
+            ["UX", "9000", "0", "0", "0", "10", "false", "17,42", "MISSION"]]]
+        text = summarize(parse(recs))
+        self.assertIn("(17,42) score 100, city in about 2 turns [coast; WINE]. TAKEN: Settler 9000", text)
+        self.assertIn("(15,43) score 96, can found this turn [fresh water]. RISK: barbarian camp", text)
+        self.assertIn("FIRST CITY", text)
+
+
+
+
+class GreatPeopleTest(unittest.TestCase):
+    def test_options_and_todo(self):
+        recs = [T.join(r) for r in [
+            ["P", "40", "Germany", "100", "5", "20", "8", "3", "6", "UNITS", "TECH_PHILOSOPHY", "4"],
+            ["L", "0", "10", "0", "false"], ["R", "0", "0", "false", "", "10", "4", "200", "0"],
+            ["C", "8192", "Berlin", "19", "66", "6", "2", "10", "Library", "3", "8"],
+            ["U", "40960", "UNIT_SCIENTIST", "19", "66", "2", "2", "100", "0", "false", "false"],
+            ["UM", "40960", "MISSION_DISCOVER"], ["GPU", "40960", "UNIT_SCIENTIST"],
+            ["GPB", "40960", "BUILD_ACADEMY", "20", "67", "1"],
+            ["U", "41000", "UNIT_MERCHANT", "18", "60", "2", "2", "100", "0", "false", "false"],
+            ["GPU", "41000", "UNIT_MERCHANT"], ["GPT", "41000", "Geneva", "25", "60", "7"]]]
+        text = summarize(parse(recs))
+        for expected in ["GREAT PERSON - choose how to use it", "MISSION_DISCOVER: a burst of science",
+                         "or build an Academy", "nearest tile for BUILD_ACADEMY: (20,67), 1 tiles away",
+                         "possible right where it stands (unit_mission): MISSION_DISCOVER",
+                         "nearest city-state for a trade mission: Geneva at (25,60), 7 tiles away",
+                         "decide how to use Great Person 40960 UNIT_SCIENTIST"]:
+            self.assertIn(expected, text)
 
 
 if __name__ == "__main__":

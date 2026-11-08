@@ -10,14 +10,14 @@ SYSTEM = """You are playing Civilization V as the player described below. Your s
 How this works:
 - Use the exact ids, coordinates and TYPE names shown in the state.
 - The TO DO THIS TURN line lists what the game requires before the turn can end. That is the minimum: each turn also look at THREATS and OPPORTUNITIES in the state and act on the ones that help you.
-- Keep a short plan with update_plan: set one on your first turn. It is shown back to you every turn; it is your only memory between turns. Check it against the current state every turn and rewrite it when it no longer fits (a step is done, a threat appeared, a better option exists). Don't just repeat it.
+- Keep a short plan with update_plan: set one on your first turn, starting with the victory you are going for ("Target: science victory. ..."). Pick it from your civ, your land and the Victory race in the state, and change it only for a clear reason. It is shown back to you every turn; it is your only memory between turns. Check it against the current state every turn and rewrite it when it no longer fits (a step is done, a threat appeared, a better option exists). Don't just repeat it.
 - Unit ids and city ids are different things; only use ids from the Units list for unit tools.
 - When you're done, call end_turn. It is refused while units still need orders.
 - If a tool returns an error, read it and do something different rather than repeating the call.
 
 Game rules worth knowing:
 - Victory types: domination (capture every original capital), science (complete the spaceship), culture (tourism beats every civ's culture), diplomatic (win a World Congress vote).
-- A settler is used up when it founds a city. Cities can't be founded too close to another city; found_city tells you if a tile is invalid. The "best city sites" scores are the game's own rating of nearby tiles (100 = best in range).
+- A settler is used up when it founds a city. Cities can't be founded too close to another city; found_city tells you if a tile is invalid. The "best city sites" scores are the game's own rating of nearby tiles (100 = best in range); each site also says how many turns until the city could be founded there, how close your nearest city is, and any risks. A slightly lower score founded turns earlier is often better: a city's first turns matter most. Settlers can't defend themselves: escort them near barbarians, and don't send two Settlers to the same site.
 - Moves: each unit that needs orders lists the tiles it can step onto right now. For longer trips, move_unit to a far explored tile and the unit keeps going on later turns. Unexplored tiles, mountains and (for land units) water can't be targeted.
 - Ancient ruins give a free reward (gold, a tech, population, a unit upgrade, map) to the first unit that enters them.
 - A unit with 0 moves left can't act until next turn. Moving onto hills, forest or jungle usually uses all remaining moves.
@@ -54,14 +54,15 @@ Combat:
 
 Other:
 - Gold can buy units and buildings instantly in a city (buy with currency GOLD), at a much higher cost than producing them.
-- Great People (scientists, engineers, merchants, artists, generals...) have one-time special actions listed under each unit.
+- Great People appear from great person points. Each can do a one-time action or build its special improvement on a tile in your land (the improvement gives a yield every turn for the rest of the game); both use it up, except Great Generals and Admirals, which mostly stay with your army or fleet. Rough guide: early in the game the permanent improvement usually pays off more; late in the game, or when one burst finishes something important (a wonder, a key tech, a golden age), use the action. Moving to the right place first is often needed: Engineers hurry production inside a city, Merchants trade inside a city-state's land, great works need a city with an empty slot. Great People are defenceless: keep them out of enemy reach.
 - An ideology (Freedom, Order, Autocracy) is chosen in the Industrial era or later and shapes late-game policies.
 
 Diplomacy and the wider world:
 - The "Other civilizations" section shows each rival you've met: score, cities, military size compared with yours, era and techs compared with yours, policies, tourism, religion and wonders, their attitude toward you (FRIENDLY, NEUTRAL, GUARDED, AFRAID, DECEPTIVE, HOSTILE, WAR - your best guess, as in the game's diplomacy screen) and the reasons they give, plus wars and friendships between rivals. Use it: a hostile neighbour with a bigger army is a danger, a rival far ahead in techs is close to a science victory, high tourism means a culture threat, many wonders or policies show where they invest.
 - Other leaders sometimes talk to you: warnings, requests, trade offers, demands. The state shows what they said and your numbered options; answer with respond_to_leader. Refusing demands can anger them; accepting deals gives and takes exactly what is listed.
 - declare_war starts a war with a civ or city-state; peace treaties block it for a while. Other civs remember who attacks whom.
-- City-states give bonuses to civs with high influence; quests, gifts and protecting them raise influence.
+- City-states: at 30 influence you are friends and get their bonus (maritime: food, cultured: culture, militaristic: units, mercantile: happiness and gold, religious: faith); at 60, if you have the most influence, you become their ally: a bigger bonus, their luxuries and strategic resources, and their vote in the World Congress. Influence decays every turn. Raise it by finishing their quests (listed per city-state), gifts (gift_gold), and pledging protection (pledge_protection). Allying many city-states is the road to a diplomatic victory.
+- Happiness: each different luxury type you have (improved, traded or from an allied city-state) adds happiness; extra copies add nothing, so trade them away. Each city and each citizen adds unhappiness. The state shows the full breakdown and warns before you drop below zero.
 - Caravans and Cargo Ships make trade routes (trade_route) to the listed cities: international routes earn gold and science, routes between your own cities carry food or production. Routes last a number of turns, then the unit is free again.
 - Spies (from the Renaissance on) can steal techs from other civs' cities, rig elections in city-states, stage coups, defend your own cities against enemy spies, or act as diplomats in a capital (move_spy). When a spy steals, you pick the tech (steal_tech).
 - The World Congress meets periodically: members propose resolutions (league_propose) and then vote on them (league_vote, or league_abstain). More delegates means more votes; a diplomatic victory needs winning the World Leader vote.

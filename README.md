@@ -11,7 +11,7 @@ and how the tools work, plus any guidelines you add.
 ## Requirements
 
 - Civilization V with Brave New World (the agent uses its Lua API)
-- Python 3.8+ (standard library only)
+- Python 3.8+ (the console version needs only the standard library; the window needs PyQt6)
 - Ollama running locally, with a model that supports tool calling:
   `ollama pull qwen2.5:14b`
 
@@ -31,6 +31,22 @@ and how the tools work, plus any guidelines you add.
 4. Close FireTuner if it is open. The game accepts only one tuner connection.
 
 ## Usage
+
+**In a window (recommended):**
+
+```
+py -m pip install -r requirements.txt   # once: installs PyQt6
+py gui.py
+```
+
+Pick a model (the list comes from Ollama), set the context size, turn limit and how often lessons are
+reviewed, and press **Start**. The window shows the turn's key numbers, what must be done, threats and
+opportunities, the victory race, your cities and units, a live feed of what the model thinks and does (each
+action marked as done or failed), its plan and lessons (editable), and the exact prompt it saw each turn.
+Type in **Talk to the model** to give it direction (Ctrl+Enter sends). **Stop after turn** finishes the current
+turn first; **Stop now** stops at once.
+
+**In the console:**
 
 ```
 py agent.py                      # play until stopped
@@ -88,9 +104,12 @@ pauses and asks you to handle it in the game window.
 ## Project layout
 
 ```
-agent.py              entry point (py agent.py)
+agent.py              console entry point (py agent.py)
+gui.py                desktop GUI entry point (py gui.py)
 civ5ai/
   cli.py              command line, Ctrl+C pause
+  runner.py           playing a game: connect, turns, recovery, stopping
+  gui.py              the PyQt6 window
   agent.py            turn loop, guards, fallbacks, logging
   prompt.py           system prompt: rules and guidelines, no strategy
   tools.py            tool definitions sent to the model
@@ -99,9 +118,11 @@ civ5ai/
   actions.py          Python wrappers for the in-game actions
   popups.py           closes popups the game leaves on screen
   diplomacy.py        AI leader dialogs and trade offers
+  lessons.py          the model's lessons.md: reviews and loading
   lua/state.lua       state snapshot, run inside the game
   lua/actions.lua     actions, installed in the game as _AI
 scripts/probe.py      low-level protocol probe (diagnostics)
+scripts/review_logs.py  seed lessons.md from past game logs
 tests/                offline tests (no game needed)
 ```
 

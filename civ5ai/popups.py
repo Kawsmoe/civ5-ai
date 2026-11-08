@@ -30,6 +30,16 @@ print("closed")
 """
 
 
+def close_named(tuner, name):
+    """Close one popup by its Lua state name; True if it was open."""
+    if name not in tuner.states:
+        return False
+    try:
+        return tuner.run(CLOSER, state=name, timeout=2) == ["closed"]
+    except TunerError:
+        return False
+
+
 def close_popups(tuner, keep_choices=True):
     """Close every open informational popup; return the names closed.
 

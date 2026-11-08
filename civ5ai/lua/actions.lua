@@ -10,9 +10,10 @@
 --   Empire      set_research (also distant techs: queues the path), free_tech, set_production, buy, city_attack,
 --               adopt_policy, choose_ideology, end_turn
 --   Religion    found_pantheon (also Reformation), found_religion, enhance_religion
---   Diplomacy   declare_war, diplo_vote, league_propose, league_vote, league_abstain
+--   Diplomacy   declare_war, diplo_vote, league_propose, league_vote, league_abstain,
+--               gift_gold, pledge_protection (city-states)
 --   Espionage   move_spy, stage_coup, steal_tech
---   Choices     choose_great_person, archaeology
+--   Choices     choose_great_person, archaeology, choose_ruin_reward
 --
 -- Where the game's own UI goes through Network.Send* or a selection message,
 -- we use the same call, so the game handles it exactly like a player's click.
@@ -762,4 +763,69 @@ function _AI.build_improvement(uid, buildType, x, y)
 	if not moved:find("^ok") then return moved end
 	u:PushMission(MissionTypes.MISSION_BUILD, b.ID, -1, 0, 1)  -- 1 = append after the move (the binding wants ints, not booleans)
 	return moved .. "; it will build " .. buildType .. " there on arrival (about " .. turns .. " turns of work)"
+end
+
+-- Ancient ruins reward choice (units with the "pick your reward" promotion, e.g. the Shoshone's) -------
+
+-- the unit that is choosing: a picker unit, preferring one that moved this turn (it just entered the ruins)
+local function goodyPicker()
+	local promo = GameInfo.UnitPromotions.PROMOTION_GOODY_HUT_PICKER
+	if promo == nil then return nil end
+	local best
+	for u in me():Units() do
+		if u:IsHasPromotion(promo.ID) then
+			if u:MovesLeft() < u:MaxMoves() then return u end
+			best = best or u
+		end
+	end
+	return best
+end
+
+-- prints one "GOODY<tab>index<tab>description" line per reward the unit may pick
+function _AI.goody_options()
+	local u = goodyPicker()
+	if u == nil then return end
+	for info in GameInfo.GoodyHuts() do
+		if me():CanGetGoody(u:GetPlot(), info.ID, u) then
+			local ok, text = pcall(Locale.ConvertTextKey, info.ChooseDescription or info.Description or info.Type)
+			print("GOODY\t" .. info.ID .. "\t" .. (ok and text or info.Type))
+		end
+	end
+end
+
+function _AI.choose_ruin_reward(goodyId)
+	local u = goodyPicker()
+	if u == nil then return "error: no unit is choosing a ruins reward" end
+	local info = GameInfo.GoodyHuts[goodyId]
+	if info == nil or not me():CanGetGoody(u:GetPlot(), goodyId, u) then return "error: that reward isn't available" end
+	Network.SendGoodyChoice(Game.GetActivePlayer(), u:GetX(), u:GetY(), goodyId, u:GetID())
+	return "ok: " .. name(u) .. " took the ruins reward " .. info.Type
+end
+
+-- City-states ---------------------------------------------------------------
+
+local function cityState(id)
+	local cs = Players[id]
+	if cs == nil or not cs:IsAlive() or not cs:IsMinorCiv() then return nil, "error: player " .. tostring(id) .. " is not a city-state" end
+	return cs
+end
+
+-- size: "small", "medium" or "large", the same three gifts the game's city-state screen offers
+function _AI.gift_gold(id, size)
+	local cs, err = cityState(id); if not cs then return err end
+	local amount = GameDefines["MINOR_GOLD_GIFT_" .. string.upper(size or "small")]
+	if amount == nil then return "error: size must be small, medium or large" end
+	if me():GetGold() < amount then return "error: a " .. size .. " gift costs " .. amount .. " gold; you have " .. me():GetGold() end
+	local gain = cs:GetFriendshipFromGoldGift(Game.GetActivePlayer(), amount)
+	Game.DoMinorGoldGift(id, amount)
+	return "ok: gave " .. amount .. " gold to " .. cs:GetCivilizationShortDescription() .. " (+" .. gain .. " influence)"
+end
+
+function _AI.pledge_protection(id)
+	local cs, err = cityState(id); if not cs then return err end
+	local iPlayer = Game.GetActivePlayer()
+	if cs:IsProtectedByMajor(iPlayer) then return "error: you already protect " .. cs:GetCivilizationShortDescription() end
+	if not cs:CanMajorProtect(iPlayer) then return "error: you can't pledge to protect " .. cs:GetCivilizationShortDescription() .. " right now" end
+	Game.DoMinorPledgeProtection(iPlayer, id, true)
+	return "ok: pledged to protect " .. cs:GetCivilizationShortDescription()
 end
