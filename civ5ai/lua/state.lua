@@ -22,7 +22,8 @@
 --                        production turns left, turns to grow
 --                   CX   id, hp, max hp, defense, religious majority
 --                   CT   city id, terrain counts in its 3-tile radius, river tiles, coastal
---                   CR   city id, resource, class, x, y, improved, improvement needed, tech missing
+--                   CR   city id, resource, class, x, y, improved, improvement needed, tech missing,
+--                        improvement there now, ours (in our borders), "BUILD:worker id:turns" in progress
 --                   B    city id, UNIT|BUILDING, type, turns
 --                   BUY  city id, GOLD|FAITH, type, cost (only what we can afford now)
 --   Units           U    id, type, x, y, moves, max moves, hp, activity, automated, combat
@@ -36,6 +37,7 @@
 --                   S    unit id, x, y, found value, distance, site info, turns until a city could be
 --                        founded there, nearest own city, its distance, risks (settle sites near a settler)
 --                   UB   unit id, build type, turns (what an idle worker can build where it stands)
+--                   UW   worker id, build it is working on, turns left (while it builds)
 --                   WT   unit id, x, y, resource, build type, distance (unimproved resources it can improve)
 --                   GPU  unit id, type (Great Person); GPB its improvement, x, y, distance;
 --                   GPT  merchant's nearest city-state city, x, y, distance
@@ -320,7 +322,19 @@ for c in p:Cities() do
 					local b, m = _AI.resource_need(plot)
 					need, missing = b or "", m or ""
 				end
-				emit("CR", cid, res, class, plot:GetX(), plot:GetY(), plot:GetImprovementType() >= 0, need, missing)
+				-- what is there now, whether it's ours to improve, and a build of ours in progress
+				local imp = plot:GetImprovementType()
+				local impName = (imp >= 0 and GameInfo.Improvements[imp]) and GameInfo.Improvements[imp].Type:gsub("^IMPROVEMENT_", "") or ""
+				local building = ""
+				for i = 0, plot:GetNumUnits() - 1 do
+					local wu = plot:GetUnit(i)
+					local bt = wu:GetOwner() == iPlayer and wu:GetBuildType() or -1
+					if bt >= 0 and GameInfo.Builds[bt] then
+						building = GameInfo.Builds[bt].Type .. ":" .. wu:GetID() .. ":" .. plot:GetBuildTurnsLeft(bt, iPlayer, 0, 0)
+					end
+				end
+				emit("CR", cid, res, class, plot:GetX(), plot:GetY(), imp >= 0, need, missing,
+					impName, plot:GetOwner() == iPlayer, building)
 			end
 		end
 	end
@@ -687,6 +701,11 @@ for u in p:Units() do
 			local adj = Map.PlotDirection(x, y, dir)
 			if adj and u:CanMoveOrAttackInto(adj) then emit("NB", uid, adj:GetX(), adj:GetY(), terrainName(adj)) end
 		end
+	end
+	-- UW: worker id, the build it is working on here, turns left (any worker, while it builds)
+	local bt = (GameInfo.Units[u:GetUnitType()].WorkRate or 0) > 0 and u:GetBuildType() or -1
+	if bt and bt >= 0 and GameInfo.Builds[bt] then
+		emit("UW", uid, GameInfo.Builds[bt].Type, u:GetPlot():GetBuildTurnsLeft(bt, iPlayer, 0, 0))
 	end
 	if (GameInfo.Units[u:GetUnitType()].WorkRate or 0) > 0 and hasMoves and not u:IsAutomated()
 		and u:GetActivityType() == ActivityTypes.ACTIVITY_AWAKE then

@@ -44,16 +44,19 @@ TOOLS = [
     # Units
     tool("found_city", "Found a city with a settler on the tile it is standing on.", unit_id=_unit()),
     tool("move_unit", "Move a unit toward a tile. Long moves continue on later turns.",
-         unit_id=_unit(), x=_int(), y=_int()),
+         unit_id=_unit(), x=_int(), y=_int(),
+         replace=_replace("pull a BUSY worker off the build it is working on")),
     tool("fortify", "Fortify a military unit in place (stays until something changes).", unit_id=_unit()),
     tool("sleep", "Put a unit to sleep until something happens nearby.", unit_id=_unit()),
     tool("skip", "Skip this unit's turn.", unit_id=_unit()),
     tool("automate", "Let the game control a unit: 'explore' for scouts, 'build' for workers.",
          unit_id=_unit(), kind=_str(enum=["explore", "build"])),
     tool("build_improvement", "Have a Worker build an improvement or road, e.g. BUILD_FARM, BUILD_MINE, BUILD_PASTURE, "
-         "BUILD_ROAD. Without x,y it builds where it stands; with x,y it walks there first and builds on arrival.",
+         "BUILD_ROAD. Without x,y it builds where it stands; with x,y it walks there first and builds on arrival. "
+         "Pick tiles from the worker's list; skip ones marked IMPROVED, BEING IMPROVED, TAKEN or OUTSIDE YOUR BORDERS.",
          unit_id=_unit(), build=_str(),
-         x={"type": "integer", "optional": True}, y={"type": "integer", "optional": True}),
+         x={"type": "integer", "optional": True}, y={"type": "integer", "optional": True},
+         replace=_replace("pull a BUSY worker off the build it is working on")),
     tool("promote", "Give a unit one of the promotions listed for it.", unit_id=_unit(), promotion=_str()),
     tool("attack", "Attack the enemy unit or city on tile (x,y) with a unit. Melee units must be adjacent; "
          "ranged units must have it in range.", unit_id=_unit(), x=_int(), y=_int()),

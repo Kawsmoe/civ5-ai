@@ -750,7 +750,11 @@ local function whyCannotBuild(plot, b)
 			end
 		end
 	end
-	if b.ImprovementType and plot:GetImprovementType() >= 0 then return "the tile already has an improvement" end
+	local imp = plot:GetImprovementType()
+	if b.ImprovementType and imp >= 0 then
+		local impName = GameInfo.Improvements[imp] and GameInfo.Improvements[imp].Type or "an improvement"
+		return "the tile already has " .. impName .. ", so this job is DONE"
+	end
 	local need, missing = _AI.resource_need(plot)
 	if need and need ~= b.Type then
 		return "this resource needs " .. need .. (missing and (", which needs " .. missing) or "") .. ", not " .. b.Type

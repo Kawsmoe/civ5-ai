@@ -78,7 +78,9 @@ def parse(lines):
         elif tag == "CR":
             state["cities"][int(f[0])]["resources"].append(
                 {"type": f[1], "class": f[2], "x": int(f[3]), "y": int(f[4]), "improved": f[5] == "true",
-                 "needs": f[6] if len(f) > 6 else "", "missing_tech": f[7] if len(f) > 7 else ""})
+                 "needs": f[6] if len(f) > 6 else "", "missing_tech": f[7] if len(f) > 7 else "",
+                 "improvement": f[8] if len(f) > 8 else "", "ours": f[9] != "false" if len(f) > 9 else True,
+                 "in_progress": _in_progress(f[10]) if len(f) > 10 and f[10] else None})
         elif tag == "NS":
             state["new_city_sites"].append(
                 {"x": int(f[0]), "y": int(f[1]), "value": int(f[2]), "dist": int(f[3]),
@@ -218,6 +220,8 @@ def parse(lines):
             state["archaeology_options"].append(f[0])
         elif tag == "NB":
             state["units"][int(f[0])]["steps"].append({"x": int(f[1]), "y": int(f[2]), "terrain": f[3]})
+        elif tag == "UW":
+            state["units"][int(f[0])]["working"] = {"build": f[1], "turns": _num(f[2])}
         elif tag == "UB":
             state["units"][int(f[0])]["builds"].append({"type": f[1], "turns": _num(f[2])})
         elif tag == "WT":
@@ -426,6 +430,10 @@ def summarize(s):
         heal = _heal_line(u)
         if heal:
             out.append("    " + heal)
+        if u.get("working"):
+            w = u["working"]
+            out.append(f"    BUSY: building {w['build']} here, {w['turns']} turns left - leave it to finish "
+                       "(a new order abandons the work)")
         if u["promotions"]:
             out.append("    PROMOTION READY: " + ", ".join(
                 p + (" (heals 50 hp at once instead of a lasting bonus)" if p == INSTA_HEAL else "")
@@ -438,8 +446,10 @@ def summarize(s):
             out.append("    can build here (build_improvement): " + ", ".join(
                 f"{b['type']} ({b['turns']}t)" for b in u["builds"]))
         if u["work_targets"]:
+            taken = _taken_tiles(s, u["id"])
             out.append("    unimproved resources it can work on (build_improvement with x,y): " + "; ".join(
                 f"{t['resource']} at ({t['x']},{t['y']}) -> {t['build']}, {t['dist']} tiles away"
+                + (f" (TAKEN: {taken[(t['x'], t['y'])]} - pick another)" if (t["x"], t["y"]) in taken else "")
                 for t in u["work_targets"]))
         if u["steps"]:
             out.append("    can step to: " + "; ".join(
@@ -577,8 +587,9 @@ def summarize(s):
         elif "victory" in t["forecast"]:
             chances.append(f"unit {t['id']} can win against {where} ({t['forecast']}; attack)")
     for u in s["units"].values():
-        if u["work_targets"]:
-            t = u["work_targets"][0]
+        free = [t for t in u["work_targets"] if (t["x"], t["y"]) not in _taken_tiles(s, u["id"])]
+        if free:
+            t = free[0]
             chances.append(f"unit {u['id']} could build {t['build']} on {t['resource']} at "
                            f"({t['x']},{t['y']}) (build_improvement)")
     if ex and ex["unseen"] > ex["total"] // 4 and not s["threats"]:
@@ -813,9 +824,38 @@ def _site_line(t, best, unit, s):
     return text
 
 
+def _taken_tiles(s, uid):
+    """{(x, y): who} for tiles another of our workers is building on or heading to."""
+    taken = {}
+    for o in s["units"].values():
+        # only workers: a military unit can share a tile with a worker
+        if o["id"] == uid or not (o.get("working") or o["type"] == "UNIT_WORKER"):
+            continue
+        if o.get("working"):
+            taken[(o["x"], o["y"])] = f"worker {o['id']} is building {o['working']['build']} there"
+        elif o.get("destination") and "," in o["destination"]:
+            x, _, y = o["destination"].partition(",")
+            if x.strip().lstrip("-").isdigit() and y.strip().lstrip("-").isdigit():
+                taken[(int(x), int(y))] = f"unit {o['id']} is heading there"
+    return taken
+
+
+def _in_progress(field):
+    """'BUILD_MINE:24576:5' -> {"build", "unit", "turns"}."""
+    build, _, rest = field.partition(":")
+    unit, _, turns = rest.partition(":")
+    return {"build": build, "unit": _num(unit), "turns": _num(turns)}
+
+
 def _resource_status(r):
     if r["improved"]:
-        return ""
+        return f" IMPROVED ({r['improvement']}): done, nothing to build" if r.get("improvement") else " IMPROVED"
+    w = r.get("in_progress")
+    if w:
+        return f" BEING IMPROVED: worker {w['unit']} is building {w['build']} ({w['turns']} turns left)"
+    if not r.get("ours", True):
+        return (" OUTSIDE YOUR BORDERS - can't be improved until your borders grow over it "
+                "(or you buy the tile)")
     if r.get("missing_tech"):
         return f" UNIMPROVED - needs {r['needs']}, which needs {r['missing_tech']}"
     return f" UNIMPROVED - {r['needs']} possible now" if r.get("needs") else " UNIMPROVED"

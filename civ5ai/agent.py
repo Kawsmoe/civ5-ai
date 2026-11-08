@@ -19,6 +19,7 @@ from . import diplomacy, lessons
 from .actions import Actions
 from .dataset import TrainLog
 from .ledger import Ledger
+from .workers import WorkerJobs
 from .popups import close_popups
 from .prompt import SYSTEM
 from .state import get_state, needs_orders, summarize
@@ -145,6 +146,7 @@ class Agent:
         self.run_start = None  # lessons.snapshot when this run began
         self.game_result = None  # set when the game is over
         self.train = TrainLog(TRAIN_DIR, self.run, SYSTEM)
+        self.jobs = WorkerJobs()  # worker orders remembered between turns (workers.py)
 
     def event(self, kind, text="", **data):
         """Report what's happening (turn, model, action, info, warn, error, lessons, waiting)."""
@@ -195,6 +197,9 @@ class Agent:
             return f"error: unknown tool {name}"
         args = dict(args)
         replace = args.pop("replace", False) in (True, "true")
+        blocked = self.jobs.check(name, args, s, replace)  # busy, done, taken or already-failed worker jobs
+        if blocked:
+            return blocked
         if name == "set_research":
             # stop flip-flopping (which wastes progress), but allow a deliberate change
             if s["research"] and not replace and self.recently_changed("research", s):
@@ -210,6 +215,7 @@ class Agent:
                         "city/cities, which is enough. Give the existing Workers jobs "
                         "(build_improvement or automate 'build') and build something else.")
         result = fn(**args)
+        self.jobs.after(name, args, s, result)
         if result.startswith("ok") and name in ("set_research", "set_production"):
             self.changed_turn["research" if name == "set_research" else int(args["city_id"])] = s["turn"]
         return result
@@ -475,6 +481,15 @@ class Agent:
             if not c["producing"] and options:
                 done.append(self.a.set_production(c["id"], min(options, key=lambda b: b["turns"])["type"]))
         for u in s["units"].values():
+            if needs_orders(u) and (u["work_targets"] or u["builds"]) and not u.get("working"):
+                # an idle worker: the nearest free resource, else let the game choose its jobs
+                taken = {(o["x"], o["y"]) for o in s["units"].values() if o.get("working")}
+                free = [t for t in u["work_targets"] if (t["x"], t["y"]) not in taken]
+                r = (self.a.build_improvement(u["id"], free[0]["build"], free[0]["x"], free[0]["y"]) if free
+                     else self.a.automate(u["id"], "build"))
+                if r.startswith("ok"):
+                    done.append(r)
+                    continue
             if needs_orders(u) and u["routes"]:
                 # an idle caravan earns nothing: send it on the best route, safe ones first
                 best = min(u["routes"], key=lambda r: (r.get("risk") or 0) > 0)
@@ -508,6 +523,11 @@ class Agent:
             if stale:
                 text += (f"\nWARNING: your plan mentions unit(s) {', '.join(stale)}, which no longer "
                          "exist. Rewrite the plan with update_plan using your current units.")
+            done = self.jobs.stale_plan_tiles(self.plan, s)
+            if done:
+                text += ("\nWARNING: your plan still asks for work on tile(s) that are already improved: "
+                         + "; ".join(f"({x},{y}) {res} has {imp}" for x, y, res, imp in done)
+                         + ". Those jobs are DONE: rewrite the plan with update_plan and give the workers new jobs.")
         else:
             text += "\n\nYour plan: none yet - write one with update_plan"
         if self.lessons:
@@ -543,6 +563,13 @@ class Agent:
                 self.event("info", "holding out this run (to measure what it does): " + "; ".join(self.held_out))
         elif self.lessons_every and s["turn"] - self.period.start["turn"] >= self.lessons_every:
             self.review(s, f"turn {s['turn']}")
+        resumed = self.jobs.resume(s, self.a)  # workers that arrived for a job and stood idle
+        for r in resumed:
+            self.event("action", f"(auto) {r}", tool="build_improvement", result=r, ok="resumed its job: ok" in r,
+                       auto=True)
+            self.record(turn=s["turn"], auto=r)
+        if resumed:
+            s = get_state(self.t)
         lost = self.track_units(s)
         text = self.build_prompt(s, lost)
         self.event("turn", text, plan=self.plan, lessons=self.lessons, held_out=self.held_out,
