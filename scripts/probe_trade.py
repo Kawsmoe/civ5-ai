@@ -1,4 +1,4 @@
-"""Check that the game functions trade.py relies on exist, without proposing anything.
+"""Check that the game functions for trading and trade routes exist, without proposing anything.
 
 Run with the game loaded and the agent stopped (only one FireTuner connection):
     py scripts/probe_trade.py
@@ -26,6 +26,13 @@ has("FROM_UI_DIPLO_EVENT_HUMAN_DISCUSSION_WORK_WITH_US",
     FromUIDiploEventTypes and FromUIDiploEventTypes.FROM_UI_DIPLO_EVENT_HUMAN_DISCUSSION_WORK_WITH_US)
 has("Player:DoBeginDiploWithHuman", Players[0].DoBeginDiploWithHuman)
 has("Player:IsDoF", Players[0].IsDoF)
+-- trade routes
+has("Player:GetNumInternationalTradeRoutesUsed", Players[0].GetNumInternationalTradeRoutesUsed)
+has("Player:GetNumInternationalTradeRoutesAvailable", Players[0].GetNumInternationalTradeRoutesAvailable)
+has("Player:GetTradeRoutes", Players[0].GetTradeRoutes)
+has("Player:GetTradeRoutesToYou", Players[0].GetTradeRoutesToYou)
+has("Player:GetPotentialTradeUnitNewHomeCity", Players[0].GetPotentialTradeUnitNewHomeCity)
+has("MISSION_CHANGE_TRADE_UNIT_HOME_CITY", MissionTypes.MISSION_CHANGE_TRADE_UNIT_HOME_CITY)
 for _, m in ipairs({"ClearItems", "SetFromPlayer", "SetToPlayer", "IsPossibleToTradeItem", "AddGoldTrade",
 		"AddGoldPerTurnTrade", "AddResourceTrade", "AddOpenBorders", "AddAllowEmbassy", "AddResearchAgreement",
 		"AddDefensivePact", "GetNumItems"}) do

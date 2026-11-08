@@ -579,6 +579,25 @@ function _AI.trade_route(uid, x, y)
 	return "error: (" .. x .. "," .. y .. ") is not a trade route destination for " .. name(u)
 end
 
+-- Move a caravan or cargo ship's home to another of our cities, so it can reach other destinations.
+function _AI.trade_home(uid, x, y)
+	local u, err = unit(uid); if not u then return err end
+	if not GameInfo.Units[u:GetUnitType()].Trade then return "error: " .. name(u) .. " is not a caravan or cargo ship" end
+	local m = MissionTypes.MISSION_CHANGE_TRADE_UNIT_HOME_CITY
+	if not m then return "error: this game version can't move a trade unit's home" end
+	local ok, homes = pcall(function() return me():GetPotentialTradeUnitNewHomeCity(u) end)
+	if not ok or not homes then return "error: couldn't list new home cities for " .. name(u) end
+	for _, v in ipairs(homes) do
+		if v.X == x and v.Y == y then
+			local city = Map.GetPlot(x, y):GetPlotCity()
+			u:PushMission(m, x, y)
+			return "ok: " .. name(u) .. " is moving its home to " .. (city and city:GetName() or ("(" .. x .. "," .. y .. ")"))
+				.. "; give it a trade_route from there once it arrives"
+		end
+	end
+	return "error: (" .. x .. "," .. y .. ") is not a city " .. name(u) .. " can move its home to"
+end
+
 -- Great person and archaeology choices ----------------------------------------
 
 function _AI.choose_great_person(kind, unitType)

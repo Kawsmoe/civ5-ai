@@ -75,6 +75,44 @@ this game and later ones. Lessons that use ideas from other Civ games (amenities
 `lessons.md` is plain Markdown: edit or delete lessons whenever you like, or write your own as `- ` lines.
 To seed it from past games without the game running: `py scripts/review_logs.py --logs 10`.
 
+Each lesson is tagged `[general]` or with a victory type (`[science]`, `[domination]`, `[culture]`,
+`[diplomatic]`); a game only sees the general lessons and those for the victory its plan names.
+
+### Evidence and hold-outs
+
+`lesson_stats.json` (`ledger.py`) records what actually happened while each lesson was in play: turns,
+how your score moved against your rivals' average, failed actions, and the results of finished games.
+That evidence is shown next to each lesson in every review, so the model keeps lessons that work and
+drops ones that don't, instead of judging them by how they sound.
+
+To have something to compare against, each run **holds out** one lesson (`--hold-out N`, `0` for none;
+"Hold out" in the GUI): it's left out of the prompt for that run and its numbers go on the "held out"
+side. Over many runs, "used" vs "held out" shows whether a lesson makes a difference. With one game at
+a time this is a rough signal; the review is told to ignore evidence from fewer than ~30 turns.
+
+When the game ends (a victory or a defeat), the agent stops and runs a final review of the whole run
+with the result, and records the result on every lesson that was used.
+
+## Fine-tuning
+
+Lessons change the prompt; fine-tuning changes the model. While it plays, the agent saves every turn's
+full exchange with the model, with the game's numbers, to `logs/train/`. To train on its best play:
+
+```
+py scripts/build_dataset.py        # keep error-free turns that beat the run's median score trend
+pip install unsloth trl datasets   # once, ideally in a separate venv (or WSL); needs an NVIDIA GPU
+py scripts/finetune_lora.py        # LoRA on qwen2.5:14b -> new Ollama model "civ5-qwen"
+py agent.py --model civ5-qwen
+```
+
+`build_dataset.py` drops turns with failed actions, replies without tool calls, or turns the model didn't
+end itself, and (by default) turns whose score gap to rivals over the next 10 turns was below that run's
+median. `finetune_lora.py` trains only on the model's own replies, exports a GGUF and creates the Ollama
+model with the base model's chat template. Collect a few thousand good turns (dozens of games) before
+expecting much; with less it mostly learns to make fewer interface mistakes. Compare it with the base
+model over several games before switching for good. For a smaller GPU use
+`--base unsloth/Qwen2.5-7B-Instruct-bnb-4bit --ollama-base qwen2.5:7b`.
+
 ## How it works
 
 ```
@@ -119,10 +157,16 @@ civ5ai/
   popups.py           closes popups the game leaves on screen
   diplomacy.py        AI leader dialogs and trade offers
   lessons.py          the model's lessons.md: reviews and loading
+  ledger.py           lesson_stats.json: evidence per lesson, hold-outs, game results
+  dataset.py          training data from play, and building a fine-tuning dataset
+  trade.py            proposing deals and friendship to AI leaders
   lua/state.lua       state snapshot, run inside the game
   lua/actions.lua     actions, installed in the game as _AI
 scripts/probe.py      low-level protocol probe (diagnostics)
+scripts/probe_trade.py  check the game functions trading relies on
 scripts/review_logs.py  seed lessons.md from past game logs
+scripts/build_dataset.py  logs/train -> datasets/sft.jsonl
+scripts/finetune_lora.py  LoRA fine-tune and load into Ollama
 tests/                offline tests (no game needed)
 ```
 

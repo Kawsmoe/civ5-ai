@@ -39,7 +39,9 @@
 --                   WT   unit id, x, y, resource, build type, distance (unimproved resources it can improve)
 --                   GPU  unit id, type (Great Person); GPB its improvement, x, y, distance;
 --                   GPT  merchant's nearest city-state city, x, y, distance
---                   TR   unit id, x, y, city, connection type, gold, science, food, production
+--                   TR   unit id, x, y, city, connection type, gold, science, food, production, plunder risk
+--                   TRH  trade unit id, x, y, city it could move its home to
+--                   TRS  trade routes used, available; TRA our active route; TRI a rival route into our city
 --   Map             E    x, y, owner, unit type, hp, strength, ranged strength (hostile units near us)
 --                   RT   UNIT|MELEE|NEAR|CITY, attacker id, target x, target y, forecast,
 --                        damage dealt, damage taken (game's own estimate)
@@ -499,21 +501,68 @@ local function settleSites(u, x, y)
 	end
 end
 
+-- visible hostile combat units (barbarians, civs at war with us) within r tiles of (x, y)
+local function hostilesNear(x, y, r)
+	local n = 0
+	for dx = -r, r do
+		for dy = -r, r do
+			local plot = Map.GetPlot(x + dx, y + dy)
+			if plot and plot:IsVisible(team:GetID(), false) and Map.PlotDistance(x, y, plot:GetX(), plot:GetY()) <= r then
+				for i = 0, plot:GetNumUnits() - 1 do
+					local eu = plot:GetUnit(i)
+					local owner = Players[eu:GetOwner()]
+					if eu:IsCombatUnit() and (owner:IsBarbarian() or team:IsAtWar(owner:GetTeam())) then n = n + 1 end
+				end
+			end
+		end
+	end
+	return n
+end
+
+-- TR: unit id, x, y, city, connection type, gold, science, food, production, hostile units near
+--     the destination or halfway there (plunder risk)
+-- TRH: unit id, x, y, city it could move its home to (to reach other destinations)
 local function tradeRoutes(u)
 	local routes = {}
+	local ux, uy = u:GetX(), u:GetY()
 	for _, v in ipairs(p:GetPotentialInternationalTradeRouteDestinations(u)) do
 		local plot = Map.GetPlot(v.X, v.Y)
 		local city = plot and plot:GetPlotCity()
 		local y = {}
 		for j, yv in ipairs(v.Yields) do y[j - 1] = yv.Mine / 100 end  -- Yields[j] is yield type j-1, x100
+		local risk = hostilesNear(v.X, v.Y, 3) + hostilesNear(math.floor((ux + v.X) / 2), math.floor((uy + v.Y) / 2), 3)
 		routes[#routes + 1] = {v.X, v.Y, city and city:GetName() or "?",
 			connNames[v.TradeConnectionType] or v.TradeConnectionType,
 			y[YieldTypes.YIELD_GOLD] or 0, y[YieldTypes.YIELD_SCIENCE] or 0,
-			y[YieldTypes.YIELD_FOOD] or 0, y[YieldTypes.YIELD_PRODUCTION] or 0}
+			y[YieldTypes.YIELD_FOOD] or 0, y[YieldTypes.YIELD_PRODUCTION] or 0, risk}
 	end
 	table.sort(routes, function(a, b) return a[5] + a[6] + a[7] + a[8] > b[5] + b[6] + b[7] + b[8] end)
 	for i = 1, math.min(6, #routes) do emit("TR", u:GetID(), unpack(routes[i])) end
+	pcall(function()
+		local homes = p:GetPotentialTradeUnitNewHomeCity(u)
+		for i = 1, math.min(4, #homes) do
+			local c = Map.GetPlot(homes[i].X, homes[i].Y):GetPlotCity()
+			if c then emit("TRH", u:GetID(), homes[i].X, homes[i].Y, c:GetName()) end
+		end
+	end)
 end
+
+-- TRS: international trade routes used, available; TRA: an active route of ours: from city, to city,
+-- to civ, domain, turns left, our gold, our science, food, production (x100 in the game, /100 here);
+-- TRI: a route of another civ into our city: their civ, their city, our city, our gold, our science
+pcall(function()
+	emit("TRS", p:GetNumInternationalTradeRoutesUsed(), p:GetNumInternationalTradeRoutesAvailable())
+	for _, r in ipairs(p:GetTradeRoutes() or {}) do
+		emit("TRA", r.FromCityName or "?", r.ToCityName or "?",
+			r.ToID and Players[r.ToID] and Players[r.ToID]:GetCivilizationShortDescription() or "",
+			r.Domain == DomainTypes.DOMAIN_SEA and "sea" or "land", r.TurnsLeft or "",
+			(r.FromGPT or 0) / 100, (r.FromScience or 0) / 100, (r.ToFood or 0) / 100, (r.ToProduction or 0) / 100)
+	end
+	for _, r in ipairs(p:GetTradeRoutesToYou() or {}) do
+		emit("TRI", r.FromID and Players[r.FromID] and Players[r.FromID]:GetCivilizationShortDescription() or "?",
+			r.FromCityName or "?", r.ToCityName or "?", (r.ToGPT or 0) / 100, (r.ToScience or 0) / 100)
+	end
+end)
 
 -- builds that make an improvement or route (not chopping/removing features)
 local function realBuild(b)

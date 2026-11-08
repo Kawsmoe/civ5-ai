@@ -63,6 +63,8 @@ TOOLS = [
          unit_id=_unit(), mission=_str()),
     tool("trade_route", "Send a Caravan or Cargo Ship on a trade route to one of its listed destinations.",
          unit_id=_unit(), x=_int(), y=_int()),
+    tool("trade_home", "Move a Caravan or Cargo Ship's home to another of your cities (one listed under the unit), "
+         "to reach destinations it can't reach from where it is.", unit_id=_unit(), x=_int(), y=_int()),
 
     # Cities, research, policies
     tool("set_research", "Choose the tech to research, e.g. TECH_POTTERY.", tech=_str(),

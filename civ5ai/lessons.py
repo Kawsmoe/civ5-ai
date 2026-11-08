@@ -36,6 +36,8 @@ Most lessons should be about strategy: expansion, what to build and research, gr
 
 Start every lesson with a tag saying which games it applies to: [general] if it helps whatever victory you go for (growth, happiness, workers, defence, the interface), or the victory it serves - [domination], [science], [culture] or [diplomatic] - if it is a choice that suits that victory and could hurt another (e.g. "build an army before expanding" is [domination], "build libraries in every city" is [science]). When unsure, use the victory tag: a lesson wrongly marked [general] misleads every other kind of game.
 
+Some lessons show evidence from earlier play: how your score compared with your rivals' while the lesson was in use, and while it was held out (left out of your prompt on purpose, as a test), plus results of finished games. Use it: drop or rewrite a lesson whose evidence is clearly bad over many turns (e.g. score vs rivals keeps falling while it is used but not while held out), keep ones whose evidence is good. Evidence from fewer than about 30 turns is noise; don't act on it alone.
+
 Base lessons on the facts you are given, not on guesses. Keep lessons that still hold, rewrite ones the facts contradict, drop ones that turned out wrong or useless, and add what these turns taught you. Then call save_lessons with the complete new list."""
 
 SAVE_TOOL = {"type": "function", "function": {
@@ -77,11 +79,25 @@ def relevant(lessons, victory):
     return [x for x in lessons if split_tag(x)[0] in (GENERAL, victory)]
 
 
-def merge(old, new, victory):
-    """The full list after a review that saw only relevant(old, victory) and returned new:
-    lessons for the other victories are kept as they were."""
-    shown = relevant(old, victory)
+def reviewable(lessons, victory, held_out=()):
+    """The lessons a review may rewrite: those for this game, minus the ones held out this run."""
+    return [x for x in relevant(lessons, victory) if x not in held_out]
+
+
+def merge(old, new, victory, held_out=()):
+    """The full list after a review that saw only reviewable(old, victory, held_out) and
+    returned new: lessons for other victories and held-out lessons are kept as they were."""
+    shown = reviewable(old, victory, held_out)
     return list(new) + [x for x in old if x not in shown]
+
+
+def standing(s):
+    """(your place by score, number of players) among you and the civs you have met."""
+    me = (s.get("me") or {}).get("score")
+    scores = [r["score"] for r in s["rivals"].values() if isinstance(r["score"], (int, float))]
+    if not isinstance(me, (int, float)):
+        return None, len(scores) + 1
+    return 1 + sum(1 for x in scores if x > me), len(scores) + 1
 
 
 _LISTED = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*(\[[^\]]+\].+)$")
@@ -132,19 +148,23 @@ def save(lessons, note=""):
     return kept
 
 
-def for_prompt(lessons, victory=None):
-    """The lessons section of a turn prompt: only those for this game's victory."""
-    shown = relevant(lessons, victory)
+def for_prompt(lessons, victory=None, held_out=()):
+    """The lessons section of a turn prompt: only those for this game's victory, minus held-out ones."""
+    shown = reviewable(lessons, victory, held_out)
     if not shown:
         return ""
     return ("Lessons from your past play (follow them unless the situation clearly differs):\n"
             + "\n".join(f"- {split_tag(lesson)[1]}" for lesson in shown))
 
 
-def review_footer(lessons, victory):
-    """The end of a review prompt: the lessons to rewrite and how to tag them."""
+def review_footer(lessons, victory, evidence=None):
+    """The end of a review prompt: the lessons to rewrite (with their evidence) and how to tag them."""
     out = ["Current lessons:" if lessons else "Current lessons: none yet."]
-    out.extend(f"  {i}. {lesson}" for i, lesson in enumerate(lessons, 1))
+    for i, lesson in enumerate(lessons, 1):
+        out.append(f"  {i}. {lesson}")
+        ev = evidence(lesson) if evidence else ""
+        if ev:
+            out.append(f"     evidence: {ev}")
     if victory:
         out.append(f"\nThis game goes for a {victory} victory: tag each lesson [general] or [{victory}]. "
                    "Lessons for other victories are kept separately; don't repeat them.")
@@ -192,8 +212,11 @@ class Period:
         self.failures[tool] += 1
         self.examples.setdefault(tool, result[:200])
 
-    def describe(self, s, plan, lessons):
-        """The review prompt: hard facts, then the current lessons for this game's victory."""
+    def describe(self, s, plan, lessons, held_out=(), evidence=None, outcome=None, run_start=None):
+        """The review prompt: hard facts, then the current lessons for this game's victory.
+
+        outcome (a dict from the agent) and run_start (the snapshot when the run began)
+        are given for the final review of a run, so it can judge the whole game."""
         end = snapshot(s)
         rows = []
         for key, before in self.start.items():
@@ -209,7 +232,34 @@ class Period:
             out.extend(f"  {tool} x{n}: {self.examples[tool]}" for tool, n in self.failures.most_common(6))
         if self.silent_replies:
             out.append(f"Replies where you wrote text but called no tools: {self.silent_replies}")
+        if run_start or outcome:
+            out.extend(_whole_run(s, end, run_start, outcome))
         out.append(f"Your plan: {plan or 'none'}")
         victory = victory_of(plan)
-        out.append(review_footer(relevant(lessons, victory), victory))
+        out.append(review_footer(reviewable(lessons, victory, held_out), victory, evidence))
         return "\n".join(out)
+
+
+def _whole_run(s, end, run_start, outcome):
+    """Final-review lines: how the whole run went and how the game ended."""
+    out = []
+    if run_start:
+        def gap(x):
+            return (x["score"] - x["rival_avg_score"]
+                    if None not in (x["score"], x["rival_avg_score"]) else None)
+        g0, g1 = gap(run_start), gap(end)
+        out.append(f"Whole run: turns {run_start['turn']} to {end['turn']}; score {run_start['score']} -> "
+                   f"{end['score']}" + (f"; your score minus rivals' average {g0:+} -> {g1:+}"
+                                        if None not in (g0, g1) else "")
+                   + f"; cities {run_start['cities']} -> {end['cities']}.")
+    rank, players = standing(s)
+    if outcome and outcome.get("over"):
+        out.append("THE GAME IS OVER: " + ("you WON" if outcome.get("won") else "you LOST")
+                   + (f" ({outcome['victory'].replace('VICTORY_', '').lower()} victory"
+                      + (f" by {outcome['winner']})" if outcome.get("winner") else ")")
+                      if outcome.get("victory") else "")
+                   + ". This is the most important fact: keep lessons that led here if you won, "
+                     "and rewrite the ones that didn't stop the loss if you lost.")
+    elif rank:
+        out.append(f"The run stopped before the game ended; you are in place {rank} of {players} by score.")
+    return out

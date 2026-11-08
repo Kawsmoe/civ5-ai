@@ -9,7 +9,7 @@ import time
 import traceback
 import urllib.error
 
-from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS, Agent, console_event
+from .agent import DEFAULT_MODEL, HOLD_OUT_LESSONS, LESSONS_EVERY, MODEL_OPTIONS, Agent, console_event
 from .tuner import Tuner, TunerError
 
 # Problems talking to the game or to Ollama: worth reconnecting and retrying the turn.
@@ -19,8 +19,9 @@ MAX_FAILURES_IN_A_ROW = 5
 
 class Runner:
     def __init__(self, model=DEFAULT_MODEL, ctx=None, turns=500, lessons_every=LESSONS_EVERY, say="",
-                 on_event=console_event):
+                 on_event=console_event, hold_out=HOLD_OUT_LESSONS):
         self.model, self.ctx, self.turns, self.lessons_every = model, ctx, turns, lessons_every
+        self.hold_out = hold_out
         self.on_event = on_event
         self.messages = queue.Queue()  # direction for the model, applied at the next turn
         if say:
@@ -86,10 +87,11 @@ class Runner:
                 return
             self.agent = Agent(self.tuner, self.model, on_event=self.on_event)
             self.agent.lessons_every = self.lessons_every
+            self.agent.hold_out = self.hold_out
             self.on_event("info", f"playing with {self.model}; logging to {self.agent.log_path}"
                           + (f"; using {len(self.agent.lessons)} lessons" if self.agent.lessons else ""))
             played, failures = 0, 0
-            while played < self.turns and not self.stop_after_turn.is_set():
+            while played < self.turns and not self.stop_after_turn.is_set() and not self.agent.game_result:
                 parts = []
                 while not self.messages.empty():
                     parts.append(self.messages.get())
@@ -118,7 +120,7 @@ class Runner:
                     continue
                 if between_turns:
                     between_turns(self)
-            if self.agent.lessons_every and not self.stop_now.is_set():
+            if self.agent.lessons_every and not self.stop_now.is_set() and not self.agent.game_result:
                 self.set_status("reviewing", "reviewing the last turns for lessons...")
                 self.agent.review_at_end()  # a clean stop: learn from the last few turns too
         except Exception as e:

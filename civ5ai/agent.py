@@ -17,6 +17,8 @@ from pathlib import Path
 
 from . import diplomacy, lessons
 from .actions import Actions
+from .dataset import TrainLog
+from .ledger import Ledger
 from .popups import close_popups
 from .prompt import SYSTEM
 from .state import get_state, needs_orders, summarize
@@ -31,10 +33,12 @@ MAX_ACTIONS_PER_TURN = 15
 MAX_FAILURES_PER_TOOL = 3  # a tool failing this often in one turn is refused until next turn
 MAX_SILENT_REPLIES = 2  # text-only replies in a row before falling back to defaults
 LESSONS_EVERY = 10  # turns between reviews where the model updates lessons.md (0 = never)
+HOLD_OUT_LESSONS = 1  # lessons left out of the prompt each run to measure what they do (0 = none)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 PLAN_FILE = PROJECT_DIR / "plan.txt"  # the model's strategy, kept across runs
 LOG_DIR = PROJECT_DIR / "logs"
+TRAIN_DIR = LOG_DIR / "train"  # training data for fine-tuning (dataset.py)
 
 # End-turn blockers the agent can clear itself; anything else waits for the human.
 HANDLED_BLOCKERS = {
@@ -134,6 +138,13 @@ class Agent:
         self.lessons = lessons.load()
         self.lessons_every = LESSONS_EVERY
         self.period = None  # lessons.Period: what happened since the last review
+        self.run = Path(self.log_path).stem
+        self.ledger = Ledger()
+        self.hold_out = HOLD_OUT_LESSONS  # lessons left out of the prompt this run, as a test
+        self.held_out = []
+        self.run_start = None  # lessons.snapshot when this run began
+        self.game_result = None  # set when the game is over
+        self.train = TrainLog(TRAIN_DIR, self.run, SYSTEM)
 
     def event(self, kind, text="", **data):
         """Report what's happening (turn, model, action, info, warn, error, lessons, waiting)."""
@@ -240,12 +251,21 @@ class Agent:
         note = "" if settlers else " You have no Settler right now; city ids are not unit ids."
         return f"Your units are: {units}.{note}"
 
-    def review(self, s, note):
-        """Let the model rewrite its lessons from what happened since the last review."""
-        if self.period is None or s["turn"] <= self.period.start["turn"]:
+    def review(self, s, note, outcome=None, final=False):
+        """Let the model rewrite its lessons from what happened since the last review.
+
+        Each review first credits the period's numbers to the lessons that were in play
+        (ledger.py), so the model sees evidence next to each lesson. The final review of
+        a run also gets the whole run and, if the game ended, how."""
+        if self.period is None or (s["turn"] <= self.period.start["turn"] and not final):
             return
+        victory = lessons.victory_of(self.plan)
+        self.ledger.add_period(self.run, lessons.relevant(self.lessons, victory), self.held_out,
+                               self.period.start, lessons.snapshot(s), sum(self.period.failures.values()))
         self.event("info", f"reviewing turns {self.period.start['turn']}-{s['turn']} to update lessons.md...")
-        prompt = self.period.describe(s, self.plan, self.lessons)
+        prompt = self.period.describe(s, self.plan, self.lessons, held_out=self.held_out,
+                                      evidence=self.ledger.evidence, outcome=outcome,
+                                      run_start=self.run_start if final else None)
         messages = [{"role": "system", "content": lessons.REVIEW_SYSTEM}, {"role": "user", "content": prompt}]
         new = None
         try:
@@ -265,9 +285,9 @@ class Agent:
         except (OSError, ValueError, KeyError) as e:
             self.record(error=f"lessons review: {e!r}")
         if new:
-            self.lessons = lessons.save(lessons.merge(self.lessons, new, lessons.victory_of(self.plan)), note)
+            self.lessons = lessons.save(lessons.merge(self.lessons, new, victory, self.held_out), note)
             self.event("lessons", "lessons now:\n" + "\n".join(f"    - {lesson}" for lesson in self.lessons),
-                       lessons=self.lessons)
+                       lessons=self.lessons, held_out=self.held_out)
             self.record(turn=s["turn"], review=prompt, lessons=self.lessons)
         else:
             self.event("info", "(the model didn't return lessons; keeping the old ones)")
@@ -282,7 +302,23 @@ class Agent:
         except (TunerError, OSError):
             return
         if s["turn"] - self.period.start["turn"] >= 3:
-            self.review(s, f"end of run, turn {s['turn']}")
+            self.review(s, f"end of run, turn {s['turn']}", final=True)
+        rank, players = lessons.standing(s)
+        self.ledger.finish_run(self.run, {"stopped": True, "turn": s["turn"], "rank": rank, "players": players})
+
+    def finish_game(self, s, outcome):
+        """The game is over: review the whole run with its result, and record the result."""
+        self.game_result = outcome
+        rank, players = lessons.standing(s)
+        if outcome.get("won"):
+            rank = 1
+        result = {**outcome, "turn": s["turn"], "rank": rank, "players": players}
+        self.record(turn=s["turn"], game_over=result)
+        self.event("info", ("the game is over: you " + ("WON" if outcome.get("won") else "lost")
+                            + (f" ({outcome['victory']})" if outcome.get("victory") else "")))
+        if self.lessons_every:
+            self.review(s, f"game over, turn {s['turn']}", outcome=outcome, final=True)
+        self.ledger.finish_run(self.run, result)
 
     def track_units(self, s):
         """Note which units disappeared since the last state; return them {id: (type, x, y)}."""
@@ -439,6 +475,13 @@ class Agent:
             if not c["producing"] and options:
                 done.append(self.a.set_production(c["id"], min(options, key=lambda b: b["turns"])["type"]))
         for u in s["units"].values():
+            if needs_orders(u) and u["routes"]:
+                # an idle caravan earns nothing: send it on the best route, safe ones first
+                best = min(u["routes"], key=lambda r: (r.get("risk") or 0) > 0)
+                r = self.a.trade_route(u["id"], best["x"], best["y"])
+                if r.startswith("ok"):
+                    done.append(r)
+                    continue
             if needs_orders(u):
                 # hurt: heal until full (the unit wakes up by itself), else fortify, else skip
                 r = (self.a.unit_mission(u["id"], "MISSION_HEAL")
@@ -468,7 +511,7 @@ class Agent:
         else:
             text += "\n\nYour plan: none yet - write one with update_plan"
         if self.lessons:
-            shown = lessons.for_prompt(self.lessons, lessons.victory_of(self.plan))
+            shown = lessons.for_prompt(self.lessons, lessons.victory_of(self.plan), self.held_out)
             if shown:
                 text += "\n\n" + shown
         if self.human_message:
@@ -480,6 +523,10 @@ class Agent:
         return text
 
     def play_turn(self):
+        over = self.a.game_over()  # first: the end screen must not be mistaken for something to wait on
+        if over:
+            self.finish_game(get_state(self.t), over)
+            return
         closed = close_popups(self.t)
         if closed:
             self.event("info", f"closed popups: {', '.join(closed)}")
@@ -489,11 +536,17 @@ class Agent:
             s = get_state(self.t)
         if self.period is None:
             self.period = lessons.Period(s)
+            self.run_start = lessons.snapshot(s)
+            self.held_out = self.ledger.choose_held_out(self.run, self.lessons, self.hold_out)
+            if self.held_out:
+                self.record(held_out=self.held_out)
+                self.event("info", "holding out this run (to measure what it does): " + "; ".join(self.held_out))
         elif self.lessons_every and s["turn"] - self.period.start["turn"] >= self.lessons_every:
             self.review(s, f"turn {s['turn']}")
         lost = self.track_units(s)
         text = self.build_prompt(s, lost)
-        self.event("turn", text, plan=self.plan, lessons=self.lessons, **turn_overview(s, text))
+        self.event("turn", text, plan=self.plan, lessons=self.lessons, held_out=self.held_out,
+                   **turn_overview(s, text))
         self.record(turn=s["turn"], state=text)
 
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
@@ -584,5 +637,10 @@ class Agent:
         # only what worked; replaying failures back to the model invites repeats
         self.last_turn_actions = [x for x in actions if x.endswith(" ok") and not x.startswith("end_turn")]
         self.event("waiting", "waiting for the other players to move...")
+        try:
+            # the exchange as training data (dataset.py); never let it cost a turn
+            self.train.turn(s["turn"], self.model, lessons.snapshot(s), messages[1:])
+        except (OSError, TypeError, ValueError) as e:
+            self.record(error=f"training log: {e!r}")
         new_turn = self.a.wait_for_my_turn(on_wait=self.handle_screens_while_waiting)
         self.record(turn=s["turn"], ended=True, next_turn=new_turn)

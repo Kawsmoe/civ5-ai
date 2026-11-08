@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import lessons
-from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS, OLLAMA_URL, PLAN_FILE
+from .ledger import Ledger
+from .agent import DEFAULT_MODEL, HOLD_OUT_LESSONS, LESSONS_EVERY, MODEL_OPTIONS, OLLAMA_URL, PLAN_FILE
 from .runner import Runner
 
 OK, ERR, WARN, MODEL, MUTED = "#2e9d5b", "#d2453b", "#c08a1e", "#7a68e0", "#8a8f99"
@@ -206,6 +207,8 @@ class MainWindow(QMainWindow):
         self.turns = spin("Turns", 1, 1000, 10, int(self.settings.value("turns", 500)), "Stop after this many turns.")
         self.lessons_every = spin("Lessons every", 0, 100, 1, int(self.settings.value("lessons_every", LESSONS_EVERY)),
                                   "Turns between reviews that update lessons.md (0 = off).")
+        self.hold_out = spin("Hold out", 0, 3, 1, int(self.settings.value("hold_out", HOLD_OUT_LESSONS)),
+                             "Lessons left out of the prompt each run, to measure whether they help (0 = none).")
 
         self.start_btn = QPushButton("Start", objectName="primary")
         self.start_btn.clicked.connect(self.start)
@@ -312,7 +315,7 @@ class MainWindow(QMainWindow):
         col.addWidget(frame)
 
         frame, lay = card("Lessons")
-        self.all_lessons, self.plan_text = [], ""
+        self.all_lessons, self.plan_text, self.held_out = [], "", []
         self.lessons_filter = QComboBox(toolTip="Which lessons to show: the ones this game's plan uses, "
                                                 "all of them, or one tag")
         self.lessons_filter.addItem("In use this game", "in_use")
@@ -388,7 +391,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(not running)
         self.stop_turn_btn.setEnabled(running)
         self.stop_now_btn.setEnabled(running)
-        for w in (self.model, self.ctx, self.turns, self.lessons_every):
+        for w in (self.model, self.ctx, self.turns, self.lessons_every, self.hold_out):
             w.setEnabled(not running)
         queued = self.runner.messages.qsize() if running else 0
         if running:
@@ -404,12 +407,14 @@ class MainWindow(QMainWindow):
             return  # cancelled: don't start
         opening = dialog.text()
         for key, value in [("model", model), ("ctx", self.ctx.value()), ("turns", self.turns.value()),
-                           ("lessons_every", self.lessons_every.value()), ("opening", opening)]:
+                           ("lessons_every", self.lessons_every.value()), ("hold_out", self.hold_out.value()),
+                           ("opening", opening)]:
             self.settings.setValue(key, value)
         self.msg.clear()
         self.send_note.setText("")
         self.runner = Runner(model=model, ctx=self.ctx.value(), turns=self.turns.value(),
-                             lessons_every=self.lessons_every.value(), say=opening, on_event=self.emit)
+                             lessons_every=self.lessons_every.value(), say=opening, on_event=self.emit,
+                             hold_out=self.hold_out.value())
         self.thread = threading.Thread(target=self.run_agent, daemon=True)
         self.thread.start()
         self.refresh_controls()
@@ -469,8 +474,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lessons_filter"):
             self.render_lessons()
 
-    def show_lessons(self, items):
+    def show_lessons(self, items, held_out=None):
         self.all_lessons = list(items)
+        if held_out is not None:
+            self.held_out = list(held_out)
         self.render_lessons()
 
     def render_lessons(self):
@@ -481,7 +488,7 @@ class MainWindow(QMainWindow):
             key = self.lessons_filter.itemData(i)
             if key == "in_use":
                 label = f"In use this game ({victory or 'no victory in plan yet'})"
-                n = len(lessons.relevant(self.all_lessons, victory))
+                n = len(lessons.reviewable(self.all_lessons, victory, self.held_out))
             elif key == "all":
                 label, n = "All", len(tags)
             else:
@@ -489,12 +496,20 @@ class MainWindow(QMainWindow):
             self.lessons_filter.setItemText(i, f"{label}: {n}")
         key = self.lessons_filter.currentData()
         if key == "in_use":
-            shown = lessons.relevant(self.all_lessons, victory)
+            shown = lessons.reviewable(self.all_lessons, victory, self.held_out)
         elif key == "all":
             shown = self.all_lessons
         else:
             shown = [x for x, tag in zip(self.all_lessons, tags) if tag == key]
-        set_bullets(self.lessons_label, shown, "none" if self.all_lessons else "none yet")
+        items = [x + ("  (held out this run, as a test)" if x in self.held_out else "") for x in shown]
+        set_bullets(self.lessons_label, items, "none" if self.all_lessons else "none yet")
+        # evidence from lesson_stats.json on hover
+        try:
+            ledger = Ledger()
+            lines = [f"{lessons.split_tag(x)[1][:60]}: {ledger.evidence(x)}" for x in shown if ledger.evidence(x)]
+        except OSError:
+            lines = []
+        self.lessons_label.setToolTip("\n".join(lines) or "No evidence yet: it builds up as reviews run.")
 
     def show_prompt(self):
         self.prompt_view.setPlainText(self.prompts.get(self.prompt_turn.currentData(), ""))
@@ -511,7 +526,7 @@ class MainWindow(QMainWindow):
             self.append(f"<h3 style='margin:14px 0 4px 0'>Turn {data.get('turn')}</h3>")
             return
         if kind == "lessons":
-            self.show_lessons(data.get("lessons", []))
+            self.show_lessons(data.get("lessons", []), data.get("held_out"))
         if kind == "plan":
             self.show_plan(data.get("plan", ""))
             self.append(self.line(MODEL, "P", f"New plan: {html.escape(text)}"))
@@ -587,7 +602,7 @@ class MainWindow(QMainWindow):
         if "plan" in d:
             self.show_plan(d["plan"])
         if d.get("lessons"):
-            self.show_lessons(d["lessons"])
+            self.show_lessons(d["lessons"], d.get("held_out"))
         self.prompts[d.get("turn")] = text
         self.prompt_turn.blockSignals(True)
         self.prompt_turn.insertItem(0, f"Turn {d.get('turn')}", d.get("turn"))

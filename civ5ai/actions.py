@@ -14,6 +14,25 @@ from .tuner import TunerError
 
 LUA = (Path(__file__).parent / "lua" / "actions.lua").read_text()
 
+# GO: winning team, our team, victory type, winner's name; DEAD if we were eliminated
+GAME_OVER = """
+local me = Players[Game.GetActivePlayer()]
+local ok, w = pcall(function() return Game.GetWinner() end)
+if ok and w and w >= 0 then
+	local okv, v = pcall(function() return Game.GetVictory() end)
+	local vt = (okv and v and v >= 0 and GameInfo.Victories[v]) and GameInfo.Victories[v].Type or ""
+	local name = ""
+	for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+		if Players[i] and Players[i]:GetTeam() == w and Players[i]:IsEverAlive() then
+			name = Players[i]:GetCivilizationShortDescription() break
+		end
+	end
+	print("GO\\t" .. w .. "\\t" .. me:GetTeam() .. "\\t" .. vt .. "\\t" .. name)
+elseif not me:IsAlive() then
+	print("DEAD")
+end
+"""
+
 
 def _lua_arg(v):
     """Python value -> Lua literal. Strings from the model are always quoted and
@@ -173,6 +192,9 @@ class Actions:
     def trade_route(self, unit_id, x, y):
         return self._call("trade_route", int(unit_id), int(x), int(y))
 
+    def trade_home(self, unit_id, x, y):
+        return self._call("trade_home", int(unit_id), int(x), int(y))
+
     def choose_great_person(self, kind, unit_type):
         return self._call("choose_great_person", str(kind).upper(), unit_type)
 
@@ -249,6 +271,21 @@ class Actions:
         turn, active = self._turn_status()
         return turn > self.turn_before_end or not active
 
+    def game_over(self):
+        """None while the game goes on; else {"over", "won", "victory", "winner"}."""
+        try:
+            lines = self.t.run(GAME_OVER, timeout=5)
+        except TunerError:
+            return None
+        for line in lines:
+            tag, *f = line.split("\t")
+            if tag == "GO":
+                return {"over": True, "won": f[0] == f[1], "victory": f[2] if len(f) > 2 else "",
+                        "winner": f[3] if len(f) > 3 else ""}
+            if tag == "DEAD":
+                return {"over": True, "won": False, "victory": "", "winner": ""}
+        return None
+
     def wait_for_my_turn(self, timeout=600, on_wait=None, every=3):
         """After end_turn: block until the AIs finish and our next turn starts.
 
@@ -265,8 +302,11 @@ class Actions:
             turn, active = self._turn_status()
             if turn > start and active:
                 return turn
-            if on_wait and time.time() - last_check >= every:
-                on_wait()
+            if time.time() - last_check >= every:
+                if on_wait:
+                    on_wait()
+                if self.game_over():
+                    return turn  # no next turn is coming; the agent sees the end itself
                 last_check = time.time()
             time.sleep(1)
         raise TimeoutError("our turn did not come back")

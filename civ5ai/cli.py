@@ -12,7 +12,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "civ5ai"
 
-from .agent import DEFAULT_MODEL, LESSONS_EVERY, MODEL_OPTIONS
+from .agent import DEFAULT_MODEL, HOLD_OUT_LESSONS, LESSONS_EVERY, MODEL_OPTIONS
 from .runner import Runner
 
 
@@ -29,10 +29,12 @@ def main():
                          "lower it if the model doesn't fit on the GPU next to the game")
     ap.add_argument("--lessons-every", type=int, default=LESSONS_EVERY,
                     help=f"turns between reviews that update lessons.md (default {LESSONS_EVERY}; 0 = off)")
+    ap.add_argument("--hold-out", type=int, default=HOLD_OUT_LESSONS,
+                    help=f"lessons left out each run to measure what they do (default {HOLD_OUT_LESSONS}; 0 = none)")
     args = ap.parse_args()
 
     runner = Runner(model=args.model, ctx=args.ctx, turns=args.turns, lessons_every=args.lessons_every,
-                    say=args.say)
+                    say=args.say, hold_out=args.hold_out)
 
     # Ctrl+C asks for a pause instead of killing the run mid-command (which
     # could leave the game half-way through an action); we pause between turns.

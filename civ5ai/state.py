@@ -27,7 +27,8 @@ def parse(lines):
              "league": None, "diplo_vote_options": [], "archaeology_options": [], "pois": [],
              "new_city_sites": [], "threats": [], "me": None, "rivals": {}, "rival_relations": [],
              "unexplored": None, "tech_goals": [], "city_states": {}, "happy": None, "luxuries": [],
-             "victory": [], "total_capitals": None, "leader": "", "traits": [], "uniques": []}
+             "victory": [], "total_capitals": None, "leader": "", "traits": [], "uniques": [],
+             "trade": None, "trade_routes": [], "trade_in": []}
     for line in lines:
         tag, *f = line.split("\t")
         if tag == "P":
@@ -63,7 +64,7 @@ def parse(lines):
                 "moves": _num(f[4]), "max_moves": _num(f[5]), "hp": _num(f[6]),
                 "activity": int(f[7]), "automated": f[8] == "true",
                 "combat": f[9] == "true", "sites": [], "promotions": [], "missions": [],
-                "routes": [], "steps": [], "builds": [], "work_targets": [], "enemies_near": 0,
+                "routes": [], "homes": [], "steps": [], "builds": [], "work_targets": [], "enemies_near": 0,
                 "great_person": "", "gp_builds": [], "gp_trade": None}
         elif tag == "S":
             state["units"][int(f[0])]["sites"].append(
@@ -188,7 +189,19 @@ def parse(lines):
         elif tag == "TR":
             state["units"][int(f[0])]["routes"].append(
                 {"x": int(f[1]), "y": int(f[2]), "city": f[3], "kind": f[4],
-                 "gold": _num(f[5]), "science": _num(f[6]), "food": _num(f[7]), "production": _num(f[8])})
+                 "gold": _num(f[5]), "science": _num(f[6]), "food": _num(f[7]), "production": _num(f[8]),
+                 "risk": _num(f[9]) if len(f) > 9 else 0})
+        elif tag == "TRH":
+            state["units"][int(f[0])]["homes"].append({"x": int(f[1]), "y": int(f[2]), "city": f[3]})
+        elif tag == "TRS":
+            state["trade"] = {"used": _num(f[0]), "available": _num(f[1])}
+        elif tag == "TRA":
+            state["trade_routes"].append({"from": f[0], "to": f[1], "civ": f[2], "domain": f[3], "turns": _num(f[4]),
+                                          "gold": _num(f[5]), "science": _num(f[6]), "food": _num(f[7]),
+                                          "production": _num(f[8])})
+        elif tag == "TRI":
+            state["trade_in"].append({"civ": f[0], "from": f[1], "to": f[2], "gold": _num(f[3]),
+                                      "science": _num(f[4])})
         elif tag == "ST":
             state["steal_options"].append({"player": int(f[0]), "tech": f[1]})
         elif tag == "GP":
@@ -311,6 +324,7 @@ def summarize(s):
         out.extend(f"    {b['type']}: {b['text']}" for b in options)
 
     # Other civs, espionage and one-off choices
+    out.extend(_trade_section(s))
     out.extend(_civ_section(s))
     out.extend(_victory_section(s))
     out.extend(_rivals_section(s))
@@ -433,7 +447,12 @@ def summarize(s):
         if u["routes"]:
             out.append("    trade route destinations (trade_route): " + "; ".join(
                 f"{r['city']} at ({r['x']},{r['y']}) {r['kind']}: gold {r['gold']}, science {r['science']}, "
-                f"food {r['food']}, production {r['production']}" for r in u["routes"]))
+                f"food {r['food']}, production {r['production']}"
+                + (f" - RISK: {r['risk']} hostile unit(s) near the route, it may be plundered" if r.get("risk") else "")
+                for r in u["routes"]))
+        if u["homes"]:
+            out.append("    could move its home city to reach other destinations (trade_home): " + "; ".join(
+                f"{h['city']} at ({h['x']},{h['y']})" for h in u["homes"]))
         if u["sites"]:
             best = u["sites"][0]["value"]
             out.append("    best city sites (score = the game's own rating, 100 = best here):")
@@ -534,6 +553,8 @@ def summarize(s):
     for u in s["units"].values():
         if needs_orders(u) and u.get("great_person"):
             todo.append(f"decide how to use Great Person {u['id']} {u['type']} (its options are listed under it)")
+        elif needs_orders(u) and u["routes"]:
+            todo.append(f"send {u['type']} {u['id']} on a trade route (trade_route; its destinations are listed under it)")
         elif needs_orders(u):
             todo.append(f"give orders to unit {u['id']} {u['type']}")
     for poi in s["pois"]:
@@ -566,6 +587,7 @@ def summarize(s):
         if idle:
             chances.append(f"unit {idle[0]['id']} {idle[0]['type']} could explore ({ex['unseen']} nearby tiles "
                            "unexplored, no enemies near your cities; automate explore or move_unit)")
+    chances.extend(_trade_chances(s))
     if chances:
         out.append("OPPORTUNITIES: " + "; ".join(chances))
     out.append("Then call end_turn.")
@@ -626,6 +648,55 @@ def _happiness_section(s):
                      if r["class"] == "luxury" and not r["improved"] and r["type"] not in have})
     if nearby:
         out.append("  New luxury types near your cities, not improved yet: " + ", ".join(nearby))
+    return out
+
+
+TRADE_UNITS = ("UNIT_CARAVAN", "UNIT_CARGO_SHIP")
+
+
+def _free_trade_slots(s):
+    """Route slots not used by a route or by a trade unit we already have."""
+    t = s.get("trade")
+    if not t or not isinstance(t["available"], int) or not isinstance(t["used"], int):
+        return 0
+    waiting = sum(1 for u in s["units"].values() if u["type"] in TRADE_UNITS or u["routes"])
+    return max(0, t["available"] - t["used"] - waiting)
+
+
+def _trade_section(s):
+    """Trade route slots, our routes and what they earn, and rivals' routes into our cities."""
+    t = s.get("trade")
+    if not t or not t["available"]:
+        return []
+    free = _free_trade_slots(s)
+    out = [f"\nTrade routes: {t['used']} of {t['available']} in use"
+           + (f" ({free} free: build a Caravan, or a Cargo Ship in a coastal city, to fill it)" if free else "") + "."]
+    for r in s["trade_routes"]:
+        gains = [f"+{r[k]} {k}" for k in ("gold", "science", "food", "production") if r[k]]
+        to = f"{r['to']} ({r['civ']})" if r["civ"] else r["to"]
+        out.append(f"  {r['from']} -> {to}, {r['domain']}: {', '.join(gains) or 'no yield'}"
+                   + (f", {r['turns']} turns left" if r["turns"] not in (None, "") else ""))
+    for r in s["trade_in"]:
+        gains = [f"+{r[k]} {k}" for k in ("gold", "science") if r[k]]
+        out.append(f"  {r['civ']}'s route {r['from']} -> your {r['to']}: {', '.join(gains) or 'nothing'} for you"
+                   " (they earn from it too; keep good relations or it ends if you go to war)")
+    return out
+
+
+def _trade_chances(s):
+    """Opportunities: a free route slot and where a trade unit is quickest to build; routes about to end."""
+    out = []
+    free = _free_trade_slots(s)
+    if free:
+        options = [(b["turns"], c["name"], c["id"], b["type"]) for c in s["cities"].values()
+                   for b in c["can_build"] if b["type"] in TRADE_UNITS and isinstance(b["turns"], int)]
+        if options:
+            turns, name, cid, utype = min(options)
+            out.append(f"{free} free trade route slot(s): city {cid} {name} can build {utype} in {turns} turns "
+                       "(set_production; a trade route earns every turn it runs)")
+    for r in s["trade_routes"]:
+        if isinstance(r["turns"], int) and r["turns"] <= 1:
+            out.append(f"the trade route {r['from']} -> {r['to']} ends now; its unit will need a new trade_route")
     return out
 
 

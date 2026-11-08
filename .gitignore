@@ -7,3 +7,8 @@ plan.txt
 
 # the model's own lessons (commit it if you want to share them)
 lessons.md
+
+# evidence about lessons (ledger.py), and fine-tuning data and output
+lesson_stats.json
+datasets/
+finetune/
